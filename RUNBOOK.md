@@ -17,11 +17,40 @@ other network should be refused.
 ## Run Claude
 
 ```bash
-ssh -i ~/.ssh/hetzner-isolated-vm claude@<box-ip>
+make ssh                            # resolves the IP via API, honors BOX_SSH_PORT
 export ANTHROPIC_API_KEY=...        # or ANTHROPIC_BASE_URL for the Etna gateway
 cd ~/workspace
 claude --dangerously-skip-permissions
 ```
+
+(`make ssh EXTRA='...'` runs a one-off remote command instead of an interactive
+shell.)
+
+## Giving Claude git access
+
+The box runs an npm dep tree with full perms, so treat any credential on it as
+potentially exfiltratable. **Never place a personal SSH private key or a high-scope
+token on it.** Pick a credential by blast radius and revocability:
+
+- **GitHub App installation token** — short-lived (1h) and repo-scoped. Caveat:
+  the App **private key (PEM) is the crown jewel** — if it lives on the box, a
+  leak mints tokens for *every* installed repo until you rotate it (worse than a
+  deploy key). Only keep the PEM on the box if the App is installed on just the
+  repo(s) it touches with **Contents: Read/Write only**; otherwise mint tokens
+  off-box and inject only the short-lived token.
+- **Per-repo deploy key (write)** — one per repo. Leak blast radius = that one
+  repo; revoke instantly in the repo's Deploy keys settings ("last used" is a
+  free tripwire).
+- **Fine-grained PAT** — specific repos, `contents:write` only, short expiry,
+  rotated.
+
+Whatever you choose: push to a **dedicated fork/branch you review**, not upstream
+`main`, so abuse of an on-box credential can't land code anywhere that matters.
+For unattended use (a bot with no human in the loop) a credential must live on the
+box, so lean on the most scoped + revocable option and rotate it between runs.
+
+The crown jewel stays safe regardless: **`HCLOUD_TOKEN` never touches the box**, so
+a rogue dep can trash the box but not your Hetzner account.
 
 ## Day-2
 

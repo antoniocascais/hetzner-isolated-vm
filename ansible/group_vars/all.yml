@@ -5,7 +5,7 @@ hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
 # Server shape — env overrides (.env) win, else these defaults.
 box:
   name: "{{ lookup('env', 'BOX_NAME') | default('hetzner-isolated-vm', true) }}"
-  server_type: "{{ lookup('env', 'BOX_TYPE') | default('cx22', true) }}"
+  server_type: "{{ lookup('env', 'BOX_TYPE') | default('cx23', true) }}"
   image: "{{ lookup('env', 'BOX_IMAGE') | default('ubuntu-24.04', true) }}"
   location: "{{ lookup('env', 'BOX_LOCATION') | default('nbg1', true) }}"
   user: "{{ lookup('env', 'BOX_USER') | default('claude', true) }}"
@@ -35,3 +35,4 @@ claude:
     - ripgrep
     - jq
     - build-essential
+    - tmux

@@ -39,10 +39,39 @@ No Tailscale, no manual interactive step. Inbound is your-IP-only throughout.
 
 ## Prereqs
 
-- `ansible`, `ansible-galaxy`
-- A Hetzner Cloud API token (ideally in a dedicated project, Read & Write)
-- Python `passlib` *only if* you set a console break-glass password
-- (keypair `~/.ssh/hetzner-isolated-vm` already created)
+- `python3` (3.10+) and `make`
+- A Hetzner Cloud API token, ideally in a **dedicated project**, **Read & Write**
+- A dedicated SSH keypair at `~/.ssh/hetzner-isolated-vm`
+- Outbound reachability to `api.ipify.org` (used to detect your public IP)
+
+`make install` builds a local `.venv` from pinned `requirements.txt` (Ansible + the
+Hetzner SDK) and installs the Ansible collections. Nothing touches system Python, so
+PEP 668 (`externally-managed-environment`) is a non-issue. It runs automatically before
+`create` / `configure` / `destroy`, or on its own:
+
+```bash
+make install
+```
+
+> **Python 3.13+ note:** the optional console break-glass password is hashed with
+> `passlib`, which imports the stdlib `crypt` module removed in Python 3.13. On 3.13+
+> that hashing step fails. Leave `BOX_CONSOLE_PASSWORD` unset (default) — lockout
+> recovery is handled by `make allow-ip` over the API, so the console password is
+> redundant anyway.
+
+## Getting a Hetzner Cloud token
+
+Scope the token to a **dedicated project** so a rogue box can't touch anything else
+you run (this is the core of the threat model above).
+
+1. Sign in to the [Hetzner Cloud Console](https://console.hetzner.cloud/).
+2. Create a **new project** (project switcher → **+ New project**), e.g. `hetzner-isolated-vm`.
+3. Open that project → **Security** → **API Tokens** → **Generate API Token**.
+4. Give it a description, set permission to **Read & Write**, and generate.
+5. Copy the token now — it's shown **once**. Put it in `.env` as `HCLOUD_TOKEN`.
+
+Tokens are project-scoped; there's no account-wide Cloud token. Lost it? Delete and
+regenerate — existing tokens can't be revealed.
 
 ## Quick start
 

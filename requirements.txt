@@ -1,0 +1,6 @@
+# Control-node deps for the venv built by `make install`. Pinned; bump deliberately.
+ansible-core==2.21.1
+hcloud==2.22.0
+python-dateutil==2.9.0.post0
+requests==2.34.2
+passlib==1.7.4

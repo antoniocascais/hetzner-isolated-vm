@@ -45,3 +45,20 @@
     owner: "{{ box.user }}"
     group: "{{ box.user }}"
     mode: "0750"
+
+- name: "Ensure ~/.claude dir"
+  ansible.builtin.file:
+    path: "/home/{{ box.user }}/.claude"
+    state: directory
+    owner: "{{ box.user }}"
+    group: "{{ box.user }}"
+    mode: "0700"
+
+- name: "Install placeholder CLAUDE.md (never clobber user edits)"
+  ansible.builtin.template:
+    src: CLAUDE.md.j2
+    dest: "/home/{{ box.user }}/.claude/CLAUDE.md"
+    owner: "{{ box.user }}"
+    group: "{{ box.user }}"
+    mode: "0644"
+    force: false
