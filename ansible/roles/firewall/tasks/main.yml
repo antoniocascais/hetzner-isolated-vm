@@ -2,13 +2,6 @@
 # Manages the Hetzner Cloud firewall via API (no SSH to the box needed).
 # Applies `firewall_rules` verbatim. Empty list == deny-all inbound.
 
-- name: "Resolve Hetzner API token from environment"
-  ansible.builtin.set_fact:
-    hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
-  when:
-    - hcloud_api_token is not defined
-    - lookup('env', 'HCLOUD_TOKEN') | default('', true) | length > 0
-
 - name: "Ensure Hetzner API token available"
   ansible.builtin.assert:
     that:
@@ -23,7 +16,7 @@
              and (item.port | default('') | string) == (box.ssh_port | string))
     fail_msg: >-
       Refusing to open SSH (port {{ box.ssh_port }}) to 0.0.0.0/0.
-      Access is via Tailscale; bootstrap uses your /32 only.
+      Access must be your /32 only.
   loop: "{{ firewall_rules }}"
   loop_control:
     label: "{{ item.description | default(item.port | default('?')) }}"

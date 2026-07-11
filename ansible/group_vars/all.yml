@@ -1,4 +1,7 @@
 ---
+# Hetzner API token — resolved from the environment (.env exports it).
+hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
+
 # Server shape — env overrides (.env) win, else these defaults.
 box:
   name: "{{ lookup('env', 'BOX_NAME') | default('hetzner-isolated-vm', true) }}"

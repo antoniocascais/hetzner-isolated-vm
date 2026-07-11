@@ -1,5 +1,5 @@
 # Managed by Ansible — hetzner-isolated-vm
-# Public SSH is only reachable during bootstrap; after lockdown, tailnet only.
+# Public SSH is reachable only from your whitelisted IP (Hetzner firewall).
 Port {{ box.ssh_port }}
 AddressFamily inet
 Protocol 2

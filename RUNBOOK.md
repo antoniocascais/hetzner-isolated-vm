@@ -58,11 +58,3 @@ before destroying.
       work from several fixed networks.
 - [ ] Token scoping (dedicated project) is by convention, not enforced in code.
 - [ ] No automated snapshots. Add a snapshot step if you want fast rollback.
-
-## Cleanup of obsolete files (one-time)
-
-The earlier Tailscale-based plan left two stale files. Remove them:
-
-```bash
-rm -f ansible/playbooks/lockdown.yml scripts/lockdown.sh
-```

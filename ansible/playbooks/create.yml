@@ -1,17 +1,13 @@
 ---
-# Phase 1: create the server + apply BOOTSTRAP firewall (SSH from your IP only).
+# Phase 1: create the server + apply the firewall (SSH from your IP only).
 # Runs entirely against the Hetzner API from localhost — no SSH to the box.
-- name: Create Claude sandbox server
+- name: Create isolated VM
   hosts: localhost
   connection: local
   gather_facts: false
   vars_files:
     - "{{ playbook_dir }}/../group_vars/all.yml"
   tasks:
-    - name: "Resolve Hetzner API token"
-      ansible.builtin.set_fact:
-        hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
-
     - name: "Require token"
       ansible.builtin.assert:
         that: hcloud_api_token | length > 0
@@ -26,6 +22,7 @@
         console_password_hash: "{{ console_pw | password_hash('sha512') if console_pw | length > 0 else '' }}"
       vars:
         console_pw: "{{ lookup('env', 'BOX_CONSOLE_PASSWORD') | default('', true) }}"
+      no_log: true
 
     - name: "Detect your current public IP (whitelist source)"
       ansible.builtin.uri:

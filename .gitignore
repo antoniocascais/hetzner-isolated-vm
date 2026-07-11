@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 *.retry
 ansible/collections/ansible_collections/
 __pycache__/

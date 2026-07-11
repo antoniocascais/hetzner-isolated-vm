@@ -9,10 +9,6 @@
   vars_files:
     - "{{ playbook_dir }}/../group_vars/all.yml"
   tasks:
-    - name: "Resolve token"
-      ansible.builtin.set_fact:
-        hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
-
     - name: "Require token"
       ansible.builtin.assert:
         that: hcloud_api_token | length > 0
@@ -52,28 +48,6 @@
     - role: claude
       tags: [claude]
 
-- name: Re-assert firewall from current IP
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  vars_files:
-    - "{{ playbook_dir }}/../group_vars/all.yml"
-  tasks:
-    - name: "Detect current public IP"
-      ansible.builtin.uri:
-        url: https://api.ipify.org?format=json
-        return_content: true
-      register: myip
-
-    - name: "Set firewall rule"
-      ansible.builtin.set_fact:
-        firewall_rules:
-          - direction: in
-            protocol: tcp
-            port: "{{ box.ssh_port | string }}"
-            source_ips: ["{{ myip.json.ip }}/32"]
-            description: "SSH (whitelisted IP)"
-
-    - name: "Apply firewall"
-      ansible.builtin.include_role:
-        name: firewall
+# Re-assert the firewall rule from your CURRENT IP (handles IP drift). Identical
+# to `make allow-ip`, so reuse that playbook instead of duplicating it.
+- ansible.builtin.import_playbook: allow-ip.yml

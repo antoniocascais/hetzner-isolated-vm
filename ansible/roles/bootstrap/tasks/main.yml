@@ -1,5 +1,5 @@
 ---
-# Idempotent host config, run over the tailnet after `tailscale up`.
+# Idempotent host config, run over SSH after the box is created.
 
 - name: "Set timezone"
   community.general.timezone:

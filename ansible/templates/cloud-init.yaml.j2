@@ -6,7 +6,7 @@ users:
   - name: {{ box.user }}
     groups: [sudo]
     shell: /bin/bash
-    sudo: "ALL=(ALL) ALL"
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
 {% if console_password_hash | default('') | length > 0 %}
     lock_passwd: false
     passwd: "{{ console_password_hash }}"
