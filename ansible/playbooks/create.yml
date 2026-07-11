@@ -1,0 +1,78 @@
+---
+# Phase 1: create the server + apply BOOTSTRAP firewall (SSH from your IP only).
+# Runs entirely against the Hetzner API from localhost — no SSH to the box.
+- name: Create Claude sandbox server
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  tasks:
+    - name: "Resolve Hetzner API token"
+      ansible.builtin.set_fact:
+        hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
+
+    - name: "Require token"
+      ansible.builtin.assert:
+        that: hcloud_api_token | length > 0
+        fail_msg: "Set HCLOUD_TOKEN in .env"
+
+    - name: "Read SSH public key"
+      ansible.builtin.set_fact:
+        ssh_public_key: "{{ lookup('file', lookup('env', 'BOX_SSH_PUBKEY_FILE') | default('~/.ssh/hetzner-isolated-vm.pub', true) | expanduser) | trim }}"
+
+    - name: "Hash console password (if provided)"
+      ansible.builtin.set_fact:
+        console_password_hash: "{{ console_pw | password_hash('sha512') if console_pw | length > 0 else '' }}"
+      vars:
+        console_pw: "{{ lookup('env', 'BOX_CONSOLE_PASSWORD') | default('', true) }}"
+
+    - name: "Detect your current public IP (whitelist source)"
+      ansible.builtin.uri:
+        url: https://api.ipify.org?format=json
+        return_content: true
+      register: myip
+
+    - name: "Set whitelist CIDR"
+      ansible.builtin.set_fact:
+        whitelist_cidr: "{{ myip.json.ip }}/32"
+
+    - name: "Create server"
+      hetzner.hcloud.server:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+        server_type: "{{ box.server_type }}"
+        image: "{{ box.image }}"
+        location: "{{ box.location }}"
+        user_data: "{{ lookup('template', playbook_dir + '/../templates/cloud-init.yaml.j2') }}"
+        labels: "{{ box.labels }}"
+        state: present
+      register: created
+
+    - name: "Create firewall with bootstrap SSH rule (your IP only)"
+      hetzner.hcloud.firewall:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ firewall.name }}"
+        state: present
+        labels: "{{ firewall.labels }}"
+        rules:
+          - direction: in
+            protocol: tcp
+            port: "{{ box.ssh_port | string }}"
+            source_ips: ["{{ whitelist_cidr }}"]
+            description: "SSH (whitelisted IP)"
+
+    - name: "Attach firewall to server"
+      hetzner.hcloud.firewall_resource:
+        api_token: "{{ hcloud_api_token }}"
+        firewall: "{{ firewall.name }}"
+        servers: ["{{ box.name }}"]
+        state: present
+
+    - name: "Next steps"
+      ansible.builtin.debug:
+        msg:
+          - "Server '{{ box.name }}' is at {{ created.hcloud_server.ipv4_address }}"
+          - "Inbound SSH (port {{ box.ssh_port }}) open from {{ whitelist_cidr }} only; all else denied."
+          - "Next: make configure   (auto-resolves the IP, installs Claude over SSH)"
+          - "Then: ssh -i ~/.ssh/hetzner-isolated-vm {{ box.user }}@{{ created.hcloud_server.ipv4_address }}"

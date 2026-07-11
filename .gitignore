@@ -1,0 +1,6 @@
+.env
+*.retry
+ansible/collections/ansible_collections/
+__pycache__/
+*.pyc
+.inventory.tmp

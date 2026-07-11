@@ -1,0 +1,79 @@
+---
+# Phase 2: resolve the server's public IP, configure it over SSH, then
+# re-assert the firewall rule from your CURRENT IP (handles IP drift).
+
+- name: Resolve server and build inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  tasks:
+    - name: "Resolve token"
+      ansible.builtin.set_fact:
+        hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
+
+    - name: "Require token"
+      ansible.builtin.assert:
+        that: hcloud_api_token | length > 0
+        fail_msg: "Set HCLOUD_TOKEN in .env"
+
+    - name: "Look up server"
+      hetzner.hcloud.server_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+      register: cfg_server
+
+    - name: "Fail if server missing"
+      ansible.builtin.assert:
+        that: cfg_server.hcloud_server_info | default([]) | length > 0
+        fail_msg: "Server '{{ box.name }}' not found — run 'make create' first."
+
+    - name: "Add server to inventory"
+      ansible.builtin.add_host:
+        name: claude_box
+        groups: claude_box
+        ansible_host: "{{ cfg_server.hcloud_server_info[0].ipv4_address }}"
+        ansible_user: "{{ box.user }}"
+        ansible_port: "{{ box.ssh_port }}"
+        ansible_ssh_private_key_file: "{{ lookup('env', 'BOX_SSH_KEY') | default('~/.ssh/hetzner-isolated-vm', true) }}"
+        ansible_python_interpreter: /usr/bin/python3
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+- name: Configure the box over SSH
+  hosts: claude_box
+  become: true
+  gather_facts: true
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  roles:
+    - role: bootstrap
+      tags: [bootstrap]
+    - role: claude
+      tags: [claude]
+
+- name: Re-assert firewall from current IP
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  tasks:
+    - name: "Detect current public IP"
+      ansible.builtin.uri:
+        url: https://api.ipify.org?format=json
+        return_content: true
+      register: myip
+
+    - name: "Set firewall rule"
+      ansible.builtin.set_fact:
+        firewall_rules:
+          - direction: in
+            protocol: tcp
+            port: "{{ box.ssh_port | string }}"
+            source_ips: ["{{ myip.json.ip }}/32"]
+            description: "SSH (whitelisted IP)"
+
+    - name: "Apply firewall"
+      ansible.builtin.include_role:
+        name: firewall

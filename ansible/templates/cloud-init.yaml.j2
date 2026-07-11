@@ -1,0 +1,40 @@
+#cloud-config
+hostname: {{ box.name }}
+preserve_hostname: false
+
+users:
+  - name: {{ box.user }}
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) ALL"
+{% if console_password_hash | default('') | length > 0 %}
+    lock_passwd: false
+    passwd: "{{ console_password_hash }}"
+{% else %}
+    lock_passwd: true
+{% endif %}
+    ssh_authorized_keys:
+      - "{{ ssh_public_key }}"
+
+package_update: true
+package_upgrade: true
+packages:
+  - curl
+  - ca-certificates
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-hetzner-isolated-vm.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      Port {{ box.ssh_port }}
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      AuthenticationMethods publickey
+      AllowUsers {{ box.user }}
+      X11Forwarding no
+
+runcmd:
+  - systemctl restart ssh

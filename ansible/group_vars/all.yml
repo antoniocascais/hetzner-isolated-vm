@@ -1,0 +1,34 @@
+---
+# Server shape — env overrides (.env) win, else these defaults.
+box:
+  name: "{{ lookup('env', 'BOX_NAME') | default('hetzner-isolated-vm', true) }}"
+  server_type: "{{ lookup('env', 'BOX_TYPE') | default('cx22', true) }}"
+  image: "{{ lookup('env', 'BOX_IMAGE') | default('ubuntu-24.04', true) }}"
+  location: "{{ lookup('env', 'BOX_LOCATION') | default('nbg1', true) }}"
+  user: "{{ lookup('env', 'BOX_USER') | default('claude', true) }}"
+  ssh_port: "{{ lookup('env', 'BOX_SSH_PORT') | default('22', true) }}"
+  labels:
+    managed_by: ansible
+    purpose: hetzner-isolated-vm
+
+# Firewall: rule list is authoritative.
+#   []                  -> deny ALL inbound (lockdown state; outbound stays open)
+#   [{ssh from /32}]    -> bootstrap state (set by create play from your current IP)
+firewall:
+  name: hetzner-isolated-vm
+  state: present
+  labels:
+    managed_by: ansible
+    purpose: hetzner-isolated-vm
+
+firewall_rules: []
+
+# Claude runtime
+claude:
+  node_major: 22
+  workspace: "/home/{{ box.user }}/workspace"
+  extra_packages:
+    - git
+    - ripgrep
+    - jq
+    - build-essential

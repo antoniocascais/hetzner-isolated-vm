@@ -1,0 +1,21 @@
+---
+- name: Destroy Claude sandbox
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  tasks:
+    - name: "Resolve token"
+      ansible.builtin.set_fact:
+        hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
+    - name: "Delete server"
+      hetzner.hcloud.server:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+        state: absent
+    - name: "Delete firewall"
+      hetzner.hcloud.firewall:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ firewall.name }}"
+        state: absent

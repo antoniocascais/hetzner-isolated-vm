@@ -1,0 +1,33 @@
+---
+# Re-detect your current public IP and update the firewall to allow SSH from it.
+# Runs against the Hetzner API from localhost — works even if you're locked out
+# of the box (e.g. your home IP changed). Safe to re-run anytime.
+- name: Allow current IP through firewall
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  tasks:
+    - name: "Detect current public IP"
+      ansible.builtin.uri:
+        url: https://api.ipify.org?format=json
+        return_content: true
+      register: myip
+
+    - name: "Set firewall rule"
+      ansible.builtin.set_fact:
+        firewall_rules:
+          - direction: in
+            protocol: tcp
+            port: "{{ box.ssh_port | string }}"
+            source_ips: ["{{ myip.json.ip }}/32"]
+            description: "SSH (whitelisted IP)"
+
+    - name: "Apply firewall"
+      ansible.builtin.include_role:
+        name: firewall
+
+    - name: "Result"
+      ansible.builtin.debug:
+        msg: "Firewall now allows SSH (port {{ box.ssh_port }}) from {{ myip.json.ip }}/32 only."
