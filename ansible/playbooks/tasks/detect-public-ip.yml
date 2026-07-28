@@ -1,0 +1,155 @@
+---
+# Ask ipify for the operator's public IP and decide whether the answer is
+# safe to use in a firewall /32 rule. Written to be included from any
+# playbook under ansible/playbooks/ so multiple playbooks share one
+# implementation instead of drifting: included directly by allow-ip.yml:13
+# and create.yml:28, and pulled in transitively by configure.yml, which
+# imports allow-ip.yml at configure.yml:10.
+#
+# Included as:
+#   ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/detect-public-ip.yml"
+#
+# Sets exactly one fact for callers: `detected_public_ip` — a plain string,
+# already checked to be (a) a syntactically valid IPv4 address and (b) not a
+# private/loopback/link-local/CGNAT/multicast/reserved address. Callers must
+# use `detected_public_ip` and must never read `myip.json.ip` /
+# `detect_ip_response.json.ip` directly (this file's own register name is an
+# implementation detail and may change).
+#
+# Why go past "is it a valid IPv4 string": on this box, the ONLY inbound
+# protection is the firewall rule built from this value (see
+# ansible/roles/firewall/tasks/main.yml, "Guard against accidental
+# world-open SSH"). ipify.org is a third-party, unauthenticated HTTPS JSON
+# endpoint with no integrity check beyond TLS. If it's hijacked, sitting
+# behind a captive portal, or fronted by a broken proxy, it can still return
+# something that PARSES as an IPv4 address while being useless or actively
+# misleading as "the operator's public IP": 0.0.0.0, 127.0.0.1, a
+# 169.254.x.x link-local address, or an RFC1918 address like 192.168.x.x.
+# ipify only ever sees the last public hop of the HTTPS connection reaching
+# it, so it cannot legitimately return an address in any of those ranges —
+# if one comes back, something other than the real ipify service answered.
+# Treated as a hard failure here, not a valid-but-unlucky answer.
+
+- name: "Detect current public IP"
+  ansible.builtin.uri:
+    url: https://api.ipify.org?format=json
+    return_content: true
+  register: detect_ip_response
+
+- name: "Reject an empty, missing, or non-JSON response body"
+  ansible.builtin.assert:
+    that:
+      - detect_ip_response.json is defined
+      - detect_ip_response.json.ip is defined
+      - detect_ip_response.json.ip | default('') | length > 0
+    fail_msg: >-
+      https://api.ipify.org did not return the expected {"ip": "..."} JSON
+      body (got: {{ detect_ip_response.content | default('<no content>') | truncate(200) }}).
+      This usually means ipify is down, you're behind a captive portal, or
+      something between here and ipify (a proxy, a DNS hijack) answered
+      instead of the real service. A firewall rule built from a bad answer
+      here is the ONLY thing standing between this box and the open internet
+      on the SSH port, so this refuses to guess. Check connectivity to
+      api.ipify.org and re-run.
+
+- name: "Reject anything that isn't a syntactically valid IPv4 address"
+  # No ansible.utils collection is vendored: ansible/collections/requirements.yml
+  # pins only hetzner.hcloud, ansible.posix and community.general, and
+  # `find ansible/collections` turns up no ansible_collections/ansible/utils
+  # tree either — confirmed by reading requirements.yml and listing the
+  # collections directory. ansible.utils.ipaddr is therefore not available
+  # here, and using it would be a hard runtime failure on this repo's pinned
+  # setup, not a nice-to-have. Falling back to a plain regex instead.
+  #
+  # Anchored with \Z, not $: Ansible's `match` test calls Python's
+  # re.match(), and Python's `$` matches either true end-of-string OR just
+  # before a single trailing newline at end-of-string. A $-anchored version
+  # of this regex therefore accepted '1.2.3.4\n' as if it were '1.2.3.4' —
+  # and '{"ip": "1.2.3.4\n"}' is valid JSON, so a hijacked/proxied ipify
+  # could use exactly that trick to slip a misleading value past this gate.
+  # \Z has no such exception; it only matches true end-of-string. (The
+  # leading ^ does no extra work here — re.match() already only matches
+  # starting at position 0, with or without ^ — but it's left in because it
+  # documents intent, costs nothing, and stays correct if this ever moves
+  # to re.search().)
+  #
+  # Defense in depth beyond the regex: also assert the value equals its own
+  # whitespace-stripped form. One wrong anchor already proved capable of
+  # quietly waving a crafted payload through this exact check, so "no
+  # leading/trailing whitespace" is no longer enforced by the regex alone —
+  # a plain string-equality check is a structurally different mechanism
+  # that isn't wrong in the same way a regex anchor can be wrong. This also
+  # guards the octet-based checks in the "Reject syntactically valid IPv4
+  # addresses that aren't a usable public source" task: they parse octets with
+  # `| map('int')`, and Python's int() silently strips whitespace
+  # (int("4\n") == 4), so a whitespace-padded value that somehow got past
+  # the regex could still have sailed through classification unnoticed.
+  ansible.builtin.assert:
+    that:
+      - detect_ip_response.json.ip == (detect_ip_response.json.ip | trim)
+      - detect_ip_response.json.ip is match(ipv4_strict_regex)
+    fail_msg: >-
+      https://api.ipify.org returned '{{ detect_ip_response.json.ip }}',
+      which is either not a syntactically valid IPv4 address or has
+      leading/trailing whitespace (this also rejects IPv6 — this tool only
+      ever builds IPv4 /32 firewall rules, and an IPv6 answer here would
+      silently fail to protect the box over IPv4). Something between here
+      and ipify likely answered instead of the real service, or ipify's
+      response format changed. Check connectivity to api.ipify.org and
+      re-run.
+  vars:
+    ipv4_strict_regex: '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}\Z'
+
+- name: "Reject syntactically valid IPv4 addresses that aren't a usable public source"
+  # Syntactic validity alone isn't enough: 0.0.0.0, 127.0.0.1, a link-local
+  # 169.254.x.x address, or an RFC1918/CGNAT address are all perfectly valid
+  # IPv4 strings, and every one of them would produce a firewall /32 rule
+  # that is either useless (matches nobody) or misleading (looks like a real
+  # allow rule but isn't the operator's address). ipify cannot legitimately
+  # hand back an address in any of these ranges as "the client's public IP",
+  # since by the time a packet reaches ipify over the public internet it has
+  # already been NATed to a real public address — so seeing one of these
+  # here means the real ipify service didn't answer.
+  vars:
+    ip_octets: "{{ detect_ip_response.json.ip.split('.') | map('int') | list }}"
+    o1: "{{ ip_octets[0] }}"
+    o2: "{{ ip_octets[1] }}"
+    is_this_network: "{{ o1 == 0 }}"
+    is_loopback: "{{ o1 == 127 }}"
+    is_link_local: "{{ o1 == 169 and o2 == 254 }}"
+    is_rfc1918: >-
+      {{
+        o1 == 10
+        or (o1 == 172 and o2 >= 16 and o2 <= 31)
+        or (o1 == 192 and o2 == 168)
+      }}
+    is_cgnat: "{{ o1 == 100 and o2 >= 64 and o2 <= 127 }}"
+    is_multicast: "{{ o1 >= 224 and o1 <= 239 }}"
+    is_reserved_or_broadcast: "{{ o1 >= 240 }}"
+    rejection_reason: >-
+      {{
+        'the "this network" range (0.0.0.0/8)' if is_this_network else
+        'a loopback address (127.0.0.0/8)' if is_loopback else
+        'a link-local address (169.254.0.0/16)' if is_link_local else
+        'a private RFC1918 address' if is_rfc1918 else
+        'a carrier-grade NAT address (100.64.0.0/10)' if is_cgnat else
+        'a multicast address (224.0.0.0/4)' if is_multicast else
+        'a reserved or broadcast address (240.0.0.0/4 or 255.255.255.255)' if is_reserved_or_broadcast else
+        ''
+      }}
+  ansible.builtin.assert:
+    that:
+      - not (is_this_network or is_loopback or is_link_local or is_rfc1918 or is_cgnat or is_multicast or is_reserved_or_broadcast)
+    fail_msg: >-
+      https://api.ipify.org returned '{{ detect_ip_response.json.ip }}',
+      which is {{ rejection_reason }}. That cannot legitimately be the
+      operator's public IP, so something other than the real ipify service
+      answered (a captive portal, a broken proxy, a DNS hijack, or similar).
+      Using it would produce a firewall /32 SSH rule that is either useless
+      or misleading rather than protecting this box. Check your network
+      connectivity to api.ipify.org and re-run — do not force this value
+      through.
+
+- name: "Set detected_public_ip for callers"
+  ansible.builtin.set_fact:
+    detected_public_ip: "{{ detect_ip_response.json.ip }}"
