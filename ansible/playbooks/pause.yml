@@ -1,0 +1,53 @@
+---
+# Power off the server to stop compute billing, without touching the
+# firewall or the data volume. Idempotent: powering off an already-stopped
+# server is a no-op — see stop_server() in the hcloud collection's
+# server.py, which checks `status != STATUS_OFF` before acting.
+#
+# SAFETY: this playbook can never delete the server.
+#   - No task here uses `state: absent`.
+#   - The one `hetzner.hcloud.server` task below passes only `name` and
+#     `state: stopped` — no server_type/image/location. `present_server()`
+#     only takes the create path when the named server does not exist, and
+#     we've already asserted it exists just above. Even if that could
+#     somehow race, `_create_server()` hard-fails via
+#     `fail_on_missing_params(["name", "server_type", "image"])` rather than
+#     silently creating a server, because we deliberately don't supply them.
+- name: Pause (power off) the server
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  tasks:
+    - name: "Require token"
+      ansible.builtin.assert:
+        that: hcloud_api_token | length > 0
+        fail_msg: "Set HCLOUD_TOKEN in .env"
+
+    - name: "Look up server"
+      hetzner.hcloud.server_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+      register: pause_server
+
+    - name: "Fail if server missing"
+      ansible.builtin.assert:
+        that: pause_server.hcloud_server_info | default([]) | length > 0
+        fail_msg: "Server '{{ box.name }}' not found — nothing to pause."
+
+    - name: "Power off the server"
+      hetzner.hcloud.server:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+        state: stopped
+      register: paused
+
+    - name: "What still bills while paused"
+      ansible.builtin.debug:
+        msg:
+          - "Server '{{ box.name }}' is powered off. Compute (server_type '{{ box.server_type }}') billing stops."
+          - "STILL BILLING: data volume '{{ volume.name }}' ({{ volume.size }}GB) — Hetzner Volumes bill by size regardless of server power state."
+          - "STILL BILLING: the server's Primary IPv4/IPv6 — Hetzner bills for a reserved Primary IP even while the server is off; this playbook does not release it."
+          - "The firewall object is untouched — nothing changes there."
+          - "Resume with: make resume"

@@ -15,14 +15,84 @@
         return_content: true
       register: myip
 
-    - name: "Set firewall rule"
+    - name: "Look up target server (best-effort — needed for the port-transition probe below; this playbook must still work before the server exists)"
+      hetzner.hcloud.server_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+      register: aip_server
+
+    - name: "Look up the firewall's current rules (before we overwrite them)"
+      hetzner.hcloud.firewall_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ firewall.name }}"
+      register: aip_firewall
+
+    - name: "Probe whether the box already answers on BOX_SSH_PORT"
+      # Load-bearing check that stops a stale transitional rule from
+      # perpetuating forever: if this succeeds, sshd is already listening on
+      # box.ssh_port (a `make configure` completed), so it's safe to collapse
+      # back to a single rule. If it fails -- box down, or BOX_SSH_PORT was
+      # just changed and `make configure` hasn't run yet to move sshd there
+      # -- keep whatever port(s) the firewall currently allows open too, so
+      # this self-heal can't lock you out of a box you could still reach.
+      ansible.builtin.wait_for:
+        host: "{{ aip_server.hcloud_server_info[0].ipv4_address }}"
+        port: "{{ box.ssh_port }}"
+        state: started
+        timeout: 8
+      when: aip_server.hcloud_server_info | default([]) | length > 0
+      register: aip_probe
+      ignore_errors: true
+
+    - name: "Determine which port(s) to allow"
+      vars:
+        server_exists: "{{ (aip_server.hcloud_server_info | default([]) | length) > 0 }}"
+        desired_reachable: "{{ server_exists and (aip_probe.skipped | default(false) == false) and (aip_probe is succeeded) }}"
+        existing_tcp_ports: >-
+          {{
+            aip_firewall.hcloud_firewall_info
+            | default([])
+            | map(attribute='rules')
+            | flatten
+            | selectattr('direction', 'equalto', 'in')
+            | selectattr('protocol', 'equalto', 'tcp')
+            | map(attribute='port')
+            | list
+          }}
+        fallback_ports: "{{ existing_tcp_ports | reject('equalto', box.ssh_port | string) | unique | list }}"
       ansible.builtin.set_fact:
-        firewall_rules:
+        # Read by configure.yml (same playbook run, same 'localhost' host,
+        # so the fact persists across the import_playbook boundary) as a
+        # connect-port fallback while sshd hasn't moved to box.ssh_port yet.
+        ssh_transition_fallback_ports: "{{ [] if ((not server_exists) or desired_reachable) else fallback_ports }}"
+
+    - name: "Warn when keeping a transitional extra port open"
+      ansible.builtin.debug:
+        msg: >-
+          BOX_SSH_PORT ({{ box.ssh_port }}) isn't reachable yet, so the
+          firewall is also keeping {{ ssh_transition_fallback_ports }} open
+          so you don't lock yourself out. Run `make configure` to finish
+          moving sshd to {{ box.ssh_port }} -- once that succeeds, the next
+          `make allow-ip` / `make configure` closes the old port automatically.
+      when: ssh_transition_fallback_ports | length > 0
+
+    - name: "Build firewall rule(s)"
+      vars:
+        fallback_rules_yaml: |-
+          {% for p in ssh_transition_fallback_ports %}
           - direction: in
             protocol: tcp
-            port: "{{ box.ssh_port | string }}"
+            port: "{{ p }}"
             source_ips: ["{{ myip.json.ip }}/32"]
-            description: "SSH (whitelisted IP)"
+            description: "SSH (transitional fallback port)"
+          {% endfor %}
+      ansible.builtin.set_fact:
+        firewall_rules: >-
+          {{
+            [{'direction': 'in', 'protocol': 'tcp', 'port': (box.ssh_port | string),
+              'source_ips': [myip.json.ip + '/32'], 'description': 'SSH (whitelisted IP)'}]
+            + ((fallback_rules_yaml | from_yaml) if (ssh_transition_fallback_ports | length > 0) else [])
+          }}
 
     - name: "Apply firewall"
       ansible.builtin.include_role:
@@ -30,4 +100,22 @@
 
     - name: "Result"
       ansible.builtin.debug:
-        msg: "Firewall now allows SSH (port {{ box.ssh_port }}) from {{ myip.json.ip }}/32 only."
+        msg: "Firewall now allows SSH (port {{ box.ssh_port }}) from {{ myip.json.ip }}/32{{ ', plus fallback port(s) ' + (ssh_transition_fallback_ports | join(', ')) + ' during transition' if ssh_transition_fallback_ports | length > 0 else '' }}."
+      when: server_exists
+
+    # This is the tool you reach for when you CAN'T get in, so the last line it
+    # prints has to be honest about whether anything is actually protecting a
+    # box. The firewall role attaches conditionally (it must, so you can
+    # pre-seed your IP before `make create`), which means a BOX_NAME typo now
+    # writes rules against a firewall attached to nothing instead of hard-
+    # failing the way it used to. Exiting 0 is right; ending on an unqualified
+    # "now allows SSH" while you're still locked out is not.
+    - name: "Result (rules written, but not attached to anything)"
+      ansible.builtin.debug:
+        msg: >-
+          Firewall '{{ firewall.name }}' now carries an SSH rule (port
+          {{ box.ssh_port }}) for {{ myip.json.ip }}/32 — but no server named
+          '{{ box.name }}' exists, so it is NOT attached to anything and nothing
+          is being filtered yet. If you expected a running box, check BOX_NAME.
+          Otherwise this is fine: `make create` will attach it.
+      when: not server_exists

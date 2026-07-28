@@ -1,42 +1,186 @@
 ---
 # Installs Node.js + Claude Code on the sandbox box.
-
-- name: "Install base packages"
-  ansible.builtin.apt:
-    name: "{{ claude.extra_packages }}"
-    state: present
-    update_cache: true
-
-- name: "Check existing node major version"
-  ansible.builtin.command: node --version
-  register: node_check
-  changed_when: false
-  failed_when: false
-
-- name: "Add NodeSource repo + install Node.js"
-  when: node_check.rc != 0 or (node_check.stdout | default('v0') | regex_replace('^v([0-9]+).*', '\\1') | int) != claude.node_major
+#
+# Node and claude-code are pinned to the exact versions the live/reference
+# box runs (never "latest"), so a rebuilt box reproduces the same toolchain
+# every finding was verified against. Node comes from the official upstream
+# tarball, checksum-verified against nodejs.org's own SHASUMS256.txt -- no
+# NodeSource repo, no unverified curl-pipe-bash.
+#
+# Egress requirements: this role needs outbound HTTPS to nodejs.org (Node
+# tarball) and registry.npmjs.org (claude-code package) the first time it
+# installs a given pinned version, plus whatever apt already needs for
+# base_packages. Both downloads are wrapped to fail fast with a clear
+# message (rather than hang/retry for minutes) if a default-deny egress
+# firewall blocks them -- see the rescue blocks below.
+#
+# Bumping these versions (~2 min):
+#   1. Node: pick the release dir at https://nodejs.org/dist/vX.Y.Z/, then
+#      pull the sha256 for node-vX.Y.Z-linux-x64.tar.gz out of that
+#      release's own SHASUMS256.txt, e.g.:
+#        curl -fsSL https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt \
+#          | grep 'linux-x64\.tar\.gz'
+#      Update node_version and node_linux_x64_sha256 below to match.
+#   2. claude-code: pick a version from
+#      https://www.npmjs.com/package/@anthropic-ai/claude-code?activeTab=versions
+#      and update claude_code_version. npm verifies what it downloads
+#      against the registry's own integrity hash, so no separate checksum
+#      is tracked here for this one.
+#
+# The two bumps are NOT independent: npm's global-package prefix for this
+# tarball install is derived from where the npm binary lives, so claude-code
+# is installed under node_home (which is node_version-specific). Bumping
+# node_version alone still forces a claude-code reinstall from the npm
+# registry on the next run (the old node_home, and the claude-code copy
+# under it, gets pruned; "Install Claude Code" below reinstalls against the
+# new prefix) -- so registry.npmjs.org must be reachable for a Node-only
+# bump too, not just a claude-code bump.
+- name: "Install pinned, checksum-verified Node.js + Claude Code"
+  vars:
+    node_version: "22.23.1"
+    node_linux_x64_sha256: "7a8cb04b4a1df4eaf432125324b81b29a088e73570a23259a8de1c65d07fc129"
+    node_dist_url: "https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version }}-linux-x64.tar.gz"
+    node_install_root: "/usr/local/lib/nodejs"
+    node_home: "{{ node_install_root }}/node-v{{ node_version }}-linux-x64"
+    claude_code_version: "2.1.207"
   block:
-    - name: "Download NodeSource setup script"
-      ansible.builtin.get_url:
-        url: "https://deb.nodesource.com/setup_{{ claude.node_major }}.x"
-        dest: /tmp/nodesource_setup.sh
-        mode: "0755"
-
-    - name: "Run NodeSource setup script"
-      ansible.builtin.command: bash /tmp/nodesource_setup.sh
-      changed_when: true
-
-    - name: "Install nodejs"
+    # This nodejs PACKAGE purge needs no network (dpkg-local), so it's safe
+    # to run first in this role regardless of egress state. The apt repo
+    # definition + keyring that installed this package are a separate
+    # concern -- pure apt hygiene, not Node-specific -- and live in the
+    # bootstrap role instead, ahead of ITS "Update apt cache" task, since
+    # that's the first apt operation in the whole play and removal has to
+    # precede it (not just this role's own apt calls) to actually keep
+    # deb.nodesource.com off every subsequent apt run. See
+    # roles/bootstrap/tasks/main.yml.
+    - name: "Remove NodeSource-installed Node.js (superseded by pinned tarball install)"
       ansible.builtin.apt:
         name: nodejs
+        state: absent
+        purge: true
+
+    - name: "Install base packages"
+      ansible.builtin.apt:
+        name: "{{ claude.extra_packages }}"
         state: present
         update_cache: true
 
-- name: "Install Claude Code globally"
-  community.general.npm:
-    name: "@anthropic-ai/claude-code"
-    global: true
-    state: latest
+    # Gate on whether OUR pinned build is actually on disk at node_home,
+    # not on what `node --version` reports. The version string alone is
+    # fragile: some other install (distro package, nvm, a stale symlink)
+    # could coincidentally report the same version without node_home
+    # existing, which would leave the unconditional symlink task below
+    # creating a DANGLING /usr/local/bin/node against a directory that was
+    # never extracted -- converting a working box into a broken one.
+    # node_home's path already embeds node_version, so a version bump
+    # naturally makes this stat miss and re-triggers extraction; no
+    # separate upgrade-path logic needed.
+    - name: "Check whether the pinned Node.js build is already extracted"
+      ansible.builtin.stat:
+        path: "{{ node_home }}/bin/node"
+      register: node_home_stat
+
+    - name: "Fetch + extract pinned Node.js when not already present at the pinned path"
+      when: not node_home_stat.stat.exists
+      block:
+        - name: "Ensure Node.js install root exists"
+          ansible.builtin.file:
+            path: "{{ node_install_root }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: "Download + extract Node.js {{ node_version }} (checksum-verified against nodejs.org)"
+          block:
+            - name: "Download Node.js tarball"
+              ansible.builtin.get_url:
+                url: "{{ node_dist_url }}"
+                dest: "/tmp/node-v{{ node_version }}-linux-x64.tar.gz"
+                checksum: "sha256:{{ node_linux_x64_sha256 }}"
+                mode: "0644"
+                timeout: 15
+
+            - name: "Extract Node.js tarball"
+              ansible.builtin.unarchive:
+                src: "/tmp/node-v{{ node_version }}-linux-x64.tar.gz"
+                dest: "{{ node_install_root }}"
+                remote_src: true
+                creates: "{{ node_home }}"
+          rescue:
+            - name: "Fail with a clear, actionable message (egress likely blocked)"
+              ansible.builtin.fail:
+                msg: >-
+                  Could not fetch Node.js {{ node_version }} from nodejs.org
+                  (outbound HTTPS to nodejs.org). If this box has a
+                  default-deny egress firewall, add nodejs.org to its
+                  allowlist and re-run. Original error:
+                  {{ ansible_failed_result.msg | default('see task output above') }}
+
+    - name: "Find previously-extracted Node.js versions"
+      ansible.builtin.find:
+        paths: "{{ node_install_root }}"
+        file_type: directory
+        recurse: false
+        excludes: "node-v{{ node_version }}-linux-x64"
+      register: stale_node_dirs
+
+    - name: "Prune stale extracted Node.js versions (keep disk usage bounded across bumps)"
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ stale_node_dirs.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: "Symlink Node.js binaries onto PATH"
+      ansible.builtin.file:
+        src: "{{ node_home }}/bin/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        state: link
+        force: true
+      loop:
+        - node
+        - npm
+        - npx
+
+    - name: "Make npm fail fast instead of retrying for minutes on a blocked registry"
+      ansible.builtin.lineinfile:
+        path: /root/.npmrc
+        create: true
+        mode: "0600"
+        regexp: "^{{ item.key }}="
+        line: "{{ item.key }}={{ item.value }}"
+      loop:
+        - { key: "fetch-retries", value: "0" }
+        - { key: "fetch-timeout", value: "15000" }
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: "Install Claude Code {{ claude_code_version }} (pinned, not latest)"
+      block:
+        - name: "npm install -g @anthropic-ai/claude-code@{{ claude_code_version }}"
+          community.general.npm:
+            name: "@anthropic-ai/claude-code"
+            version: "{{ claude_code_version }}"
+            global: true
+            state: present
+      rescue:
+        - name: "Fail with a clear, actionable message (egress likely blocked)"
+          ansible.builtin.fail:
+            msg: >-
+              Could not install @anthropic-ai/claude-code@{{ claude_code_version }}
+              from the npm registry (outbound HTTPS to registry.npmjs.org).
+              If this box has a default-deny egress firewall, add
+              registry.npmjs.org to its allowlist and re-run. Original
+              error: {{ ansible_failed_result.msg | default('see task output above') }}
+
+    - name: "Expose claude binary on PATH"
+      ansible.builtin.file:
+        src: "{{ node_home }}/bin/claude"
+        dest: /usr/local/bin/claude
+        state: link
+        force: true
 
 - name: "Ensure workspace dir"
   ansible.builtin.file:

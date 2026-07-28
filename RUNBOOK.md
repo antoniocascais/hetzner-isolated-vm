@@ -11,15 +11,22 @@ make configure                # bootstrap + Claude over SSH; re-assert firewall
 `make create` prints the box's public IP. `make configure` resolves it
 automatically via the API — no manual IP entry.
 
-Verify: `ssh -i ~/.ssh/hetzner-isolated-vm claude@<box-ip>` works; the same from any
-other network should be refused.
+Verify: `make ssh` works; the same from any other network should be refused.
+
+Prefer `make ssh` over a raw `ssh` — it resolves the IP via the API and passes
+`-p $BOX_SSH_PORT`. sshd does **not** listen on 22 and the firewall does not open
+it, so a bare `ssh user@host` will hang. The raw equivalent is:
+
+```bash
+ssh -i ~/.ssh/hetzner-isolated-vm -p 9427 claude@<box-ip>   # -p must match BOX_SSH_PORT
+```
 
 ## Run Claude
 
 ```bash
 make ssh                            # resolves the IP via API, honors BOX_SSH_PORT
-export ANTHROPIC_API_KEY=...        # or ANTHROPIC_BASE_URL for the Etna gateway
-cd ~/workspace
+export ANTHROPIC_API_KEY=...        # or ANTHROPIC_BASE_URL for a proxied gateway
+cd ~/data/workspace
 claude --dangerously-skip-permissions
 ```
 
@@ -58,15 +65,61 @@ a rogue dep can trash the box but not your Hetzner account.
   firewall via the Hetzner API — works even when you can't reach the box).
 - **Update Claude / packages**: `make configure` (idempotent).
 - **Reach a service Claude started**: it binds on the box, but the firewall only
-  allows TCP/22. To reach another port, add a temporary rule for that port from
+  allows your configured SSH port (`BOX_SSH_PORT`). To reach another port, add a temporary rule for that port from
   your /32 (extend the firewall rule list), or tunnel over SSH:
-  `ssh -i ~/.ssh/hetzner-isolated-vm -L 8080:localhost:8080 claude@<box-ip>`.
+  `ssh -i ~/.ssh/hetzner-isolated-vm -p 9427 -L 8080:localhost:8080 claude@<box-ip>`
+  (or `make ssh EXTRA='-L 8080:localhost:8080'`, which fills in the port for you).
 
 ## Break-glass (locked out, allow-ip not enough)
 
-If SSH still fails after `make allow-ip` (e.g. sshd broken), use the Hetzner web
-console (VNC): log in as `claude` with `BOX_CONSOLE_PASSWORD` (set it in
-`.env` before `make create`; needs python passlib locally to hash).
+If SSH still fails after `make allow-ip` (e.g. sshd broken, or listening on a port
+the firewall no longer allows), use the Hetzner web console (VNC): log in as `claude`
+with `BOX_CONSOLE_PASSWORD`.
+
+This only works if you set `BOX_CONSOLE_PASSWORD` in `.env` **before `make create`** —
+it is baked in by cloud-init at first boot and cannot be added to a running box from
+here. If it was unset at create time, the console shows a login prompt you have no
+credentials for. Verify you can actually log in via the console once, while SSH still
+works — an untested break-glass is not a break-glass.
+
+### Second break-glass: the Hetzner Rescue System (works with no console password)
+
+**This one does not depend on anything having been set up in advance**, which makes it
+the real recovery path for a box created without `BOX_CONSOLE_PASSWORD`. Hetzner can
+boot the server into a rescue Linux and hand you a fresh root password, optionally
+injecting your SSH key. The server's disk is untouched — you mount it and fix whatever
+you broke.
+
+**The catch nobody hits until they need it: the rescue system's sshd listens on port
+22, and our Cloud Firewall only opens `BOX_SSH_PORT`.** So rescue boots fine and you
+still can't reach it. The firewall is Hetzner-side and editable from the web console
+without touching the box, so the fix is a temporary rule — but you have to know to add
+it.
+
+1. Hetzner Cloud Console → the server → **Rescue** → enable (type `linux64`), selecting
+   your SSH key if offered. Save the root password it shows you; it is displayed once.
+2. **Before rebooting**, add a temporary inbound rule to the firewall: TCP **22** from
+   your current IP. (Detaching the firewall entirely also works and is faster under
+   pressure, but leaves the box fully exposed until you re-attach it — prefer the rule.)
+3. Reboot the server (Power → Reset). It comes up in rescue.
+4. `ssh -p 22 root@<box-ip>`, then mount the system disk and repair — typically
+   `mount /dev/sda1 /mnt` and edit `/mnt/etc/ssh/sshd_config`.
+5. Disable Rescue in the console, reboot back into the normal system, confirm SSH works
+   on `BOX_SSH_PORT`, then **remove the temporary port-22 rule**.
+
+Only if rescue also fails is `make destroy` + `make create` the answer (which preserves
+`~/data`, but nothing else).
+
+**Not verified end to end.** The mechanism is confirmed — `enable_rescue` is in the
+Hetzner SDK this repo vendors, and it returns a root password and accepts SSH key IDs.
+The port-22 firewall interaction is inferred from our own firewall rules (`create.yml`
+opens only `BOX_SSH_PORT`), not from a rescue boot anyone has actually performed here.
+Walk it once on a throwaway box before you need it.
+
+**`ssh.socket` is masked during bootstrap.** On Ubuntu 26.04 socket activation can
+override `sshd_config`'s `Port`, so a config saying 9427 may not be what actually
+listens. If someone re-enables `ssh.socket` while debugging, that footgun comes
+back — leave it masked and use `ssh.service`.
 
 ## Teardown
 
@@ -74,16 +127,69 @@ console (VNC): log in as `claude` with `BOX_CONSOLE_PASSWORD` (set it in
 make destroy        # deletes server + firewall; prompts for the name
 ```
 
-Data on the box is ephemeral by design. Push anything you want to keep to git
-before destroying.
+**`make destroy` never deletes the data volume.** `~/data` survives teardown and
+is reattached by the next `make create`. Everything *outside* `~/data` is
+ephemeral — push anything else you want to keep to git before destroying.
+
+To actually delete the volume and its data, do it deliberately via the Hetzner
+console or `hcloud` CLI. It carries `delete_protection: true`, so you must clear
+that first. No playbook will ever do this for you.
+
+## Pause / resume
+
+```bash
+make pause          # powers the server off; volume + firewall untouched
+make resume         # powers it back on
+```
+
+Both are idempotent. **Paused is not free**: the volume bills by size whatever the
+power state, and the Primary IP bills while reserved. `pause` only stops compute.
+
+`resume` re-checks that the volume is still attached to this box. If it warns that
+it isn't, do **not** assume data loss and do **not** format anything — run
+`make create` (which reattaches without reformatting) then `make configure`.
+
+## Bumping Node / Claude Code
+
+Both are pinned. Edit the vars at the top of `ansible/roles/claude/tasks/main.yml`:
+Node needs a matching SHA256 from `https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt`;
+Claude Code needs only the version. Re-provisioning purges any older
+NodeSource-installed `nodejs` package so the box converges on the pinned tarball.
+
+**The two bumps are not independent.** npm's global prefix lives under the
+version-specific Node install root, so bumping Node deletes the installed Claude
+Code along with the old root and reinstalls it against the new prefix. A Node-only
+bump therefore still needs `registry.npmjs.org` reachable — which will matter once
+egress is locked down.
 
 ## Known gaps / TODO
 
-- [ ] Outbound egress is unrestricted. To contain a rogue Claude's outbound,
-      add `direction: out` firewall rules (allow Anthropic API + apt + github,
-      deny rest). Tighten carefully — too strict breaks Claude.
+- [ ] **Outbound egress is unrestricted by this repo.** A working nftables
+      default-deny egress tool (`claude-fw`) was hand-built on the live box and is
+      captured but **not yet provisioned by Ansible** — a rebuilt box has no egress
+      containment. Porting it is the next phase. Until then, do not describe a box
+      built from this repo as egress-contained.
+- [ ] No local inbound filtering. Inbound whitelisting is entirely the Hetzner
+      Cloud Firewall (off-box); there is no nftables input chain.
 - [ ] Dynamic home IP means occasional `make allow-ip`. SSH access only opens
       one /32 at a time (the last detected). Add more CIDRs to the rule if you
       work from several fixed networks.
 - [ ] Token scoping (dedicated project) is by convention, not enforced in code.
 - [ ] No automated snapshots. Add a snapshot step if you want fast rollback.
+- [ ] **The SSH port-transition path has never run against a real sshd restart.**
+      Changing `BOX_SSH_PORT` on an existing box triggers a sequence — `allow-ip`
+      keeps the old firewall rule open until the new port answers, `configure`
+      connects on whichever port works, bootstrap moves sshd, then Ansible
+      re-points its own connection mid-play and drops the multiplexed socket.
+      Every piece is verified in isolation, and the logic traces correctly end to
+      end. What has **not** happened is a real run where sshd actually restarts
+      underneath a live Ansible connection. That is the one thing that can't be
+      proven without infrastructure. **Do a throwaway-box dry run before changing
+      `BOX_SSH_PORT` on a box you care about**, and read the Rescue System section
+      above first — this is precisely the failure it exists for.
+- [ ] **This repo does not converge a box created before the data volume existed.**
+      `configure.yml` asserts the volume exists and is attached, and aborts if not,
+      so `make configure` will not run against such a box. This is deliberate: the
+      alternative is an optional-volume code path, which is how state quietly ends
+      up on the ephemeral disk. Rebuild instead — `make destroy` + `make create`
+      provisions the volume, and `~/data` survives from then on.

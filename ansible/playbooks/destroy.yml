@@ -16,3 +16,14 @@
         api_token: "{{ hcloud_api_token }}"
         name: "{{ firewall.name }}"
         state: absent
+
+    # DELIBERATELY no `hetzner.hcloud.volume: state: absent` here. The whole
+    # point of the data volume is that it outlives `make destroy` — see
+    # group_vars/all.yml. It also carries `delete_protection: true`, so even
+    # a future edit that adds a delete task here would be rejected by the
+    # Hetzner API unless protection is turned off first. If you actually
+    # want to delete the volume and its data, do it manually and
+    # deliberately (hcloud CLI or the console) — never via this playbook.
+    - name: "Confirm the persistent volume is untouched"
+      ansible.builtin.debug:
+        msg: "Volume '{{ volume.name }}' is NOT deleted by this playbook (delete_protection: true). Data persists."

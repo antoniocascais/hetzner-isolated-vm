@@ -9,11 +9,19 @@ radius of "what if Claude goes crazy" on the inbound + cloud-account axes.
 A firewall controls **who can reach the box**, not **what the box can do**.
 This setup gives you:
 
-- **Inbound: SSH from your IP only.** The Hetzner firewall allows TCP/22 from
-  your current public /32 and denies everything else. No other public surface.
-- **Outbound: unrestricted** (your choice). A misbehaving Claude can still make
-  outbound connections — exfiltrate, attack other hosts, or burn API spend.
-  If that matters, add Hetzner `direction: out` rules later (see RUNBOOK TODO).
+- **Inbound: SSH from your IP only.** The Hetzner Cloud Firewall allows your
+  configured SSH port (`BOX_SSH_PORT`, default **9427**) from your current public
+  /32 and denies everything else. No other public surface. Note this is enforced
+  **off-box** at the Hetzner API layer — there is no local nftables input chain,
+  so the whitelist survives anything that happens on the box itself.
+  The /32 is what actually protects you, not the port number: anyone already on
+  the whitelisted address can port-scan you in seconds, and anyone else is dropped
+  before they reach sshd. If you'd nonetheless rather this public repo not name
+  your real port, set `BOX_SSH_PORT` in `.env` (gitignored) — the default above is
+  what you get if you don't, so changing the default alone doesn't decouple them.
+- **Outbound: unrestricted.** A misbehaving Claude can still make outbound
+  connections — exfiltrate, attack other hosts, or burn API spend. Nothing in
+  this repo constrains egress today; see RUNBOOK TODO.
 
 The single highest-value containment is **not** the firewall:
 
@@ -31,11 +39,22 @@ so it's isolated from your other servers' keys.
 make create    ── Hetzner API (localhost) ──> creates server (cloud-init: user,
                                                dedicated pubkey, hardened sshd)
                                              + firewall: SSH from YOUR /32 only
-make configure ── resolves IP via API ──> SSH in, bootstrap + install Claude Code
+                                             + data volume (ext4, delete-protected)
+make configure ── resolves IP + volume device via API ──> waits for SSH, then
+                   bootstrap + mount ~/data + install pinned Claude Code
                 ── Hetzner API ──> re-assert firewall from your CURRENT IP
+make pause     ── powers the server off (volume and firewall untouched)
+make resume    ── powers it back on
+make destroy   ── deletes server + firewall. NEVER the volume.
 ```
 
-No Tailscale, no manual interactive step. Inbound is your-IP-only throughout.
+No Tailscale, and no manual interactive step to reach the box. (`make destroy` is
+the one exception — it deliberately prompts for the box name to confirm.) Inbound
+is your-IP-only throughout.
+
+**One firewall object per box.** Its name is derived from `BOX_NAME`, so two boxes
+provisioned from this repo never share a firewall — `make destroy` deletes the
+firewall unconditionally, and a shared one would strip protection off the other box.
 
 ## Prereqs
 
@@ -47,17 +66,26 @@ No Tailscale, no manual interactive step. Inbound is your-IP-only throughout.
 `make install` builds a local `.venv` from pinned `requirements.txt` (Ansible + the
 Hetzner SDK) and installs the Ansible collections. Nothing touches system Python, so
 PEP 668 (`externally-managed-environment`) is a non-issue. It runs automatically before
-`create` / `configure` / `destroy`, or on its own:
+every target that needs it (`create`, `configure`, `allow-ip`, `ssh`, `pause`, `resume`,
+`destroy`), or on its own:
 
 ```bash
 make install
 ```
 
-> **Python 3.13+ note:** the optional console break-glass password is hashed with
-> `passlib`, which imports the stdlib `crypt` module removed in Python 3.13. On 3.13+
-> that hashing step fails. Leave `BOX_CONSOLE_PASSWORD` unset (default) — lockout
-> recovery is handled by `make allow-ip` over the API, so the console password is
-> redundant anyway.
+**Set `BOX_CONSOLE_PASSWORD`.** It is optional and defaults to unset, but unset means
+the Hetzner web console is a dead end. `make allow-ip` only repairs the *firewall*; it
+cannot help when sshd itself is broken or listening on an unexpected port. Hashing needs
+`passlib`, which is in `requirements.txt` and works on current Python — it vendors its
+own SHA-crypt and does not need the stdlib `crypt` module removed in 3.13.
+
+It is worth setting because it is the *convenient* recovery path, not the only one: if
+it was unset at create time you can still get in via the **Hetzner Rescue System**,
+which needs nothing prepared in advance. That route has one catch worth knowing before
+you need it:
+a rescue boot puts sshd on port 22, and this repo's firewall opens only `BOX_SSH_PORT`,
+so you must add a temporary port-22 firewall rule first. Full procedure under
+"Break-glass" in `RUNBOOK.md`.
 
 ## Getting a Hetzner Cloud token
 
@@ -84,11 +112,15 @@ make configure             # installs Claude over SSH; re-asserts firewall
 Then:
 
 ```bash
-ssh -i ~/.ssh/hetzner-isolated-vm claude@<box-ip>
-cd ~/workspace && claude --dangerously-skip-permissions
+make ssh      # resolves the IP via the API and uses BOX_SSH_PORT
+cd ~/data/workspace && claude --dangerously-skip-permissions
 ```
 
 `make create` prints the box IP. `make destroy` tears it down.
+
+A raw `ssh` needs the port: sshd does not listen on 22 and the firewall does not
+open it, so `ssh -i ~/.ssh/hetzner-isolated-vm -p 9427 claude@<box-ip>` — or just
+use `make ssh`, which reads `BOX_SSH_PORT` for you.
 
 ## If your IP changes
 
@@ -104,11 +136,34 @@ This works even while locked out — it talks to the Hetzner API, not the box.
 
 ```
 ansible/
-  group_vars/all.yml           # box shape + firewall rules (env-overridable)
+  group_vars/all.yml           # box shape + firewall + volume (env-overridable)
   templates/cloud-init.yaml.j2 # first-boot: user, dedicated pubkey, hardened sshd
   roles/firewall/              # hcloud firewall via API; rule = SSH from your /32
   roles/bootstrap/             # idempotent host hardening over SSH
-  roles/claude/                # Node + Claude Code install
-  playbooks/{create,configure,allow-ip,destroy}.yml
+  roles/volume/                # mounts the persistent data volume at ~/data
+  roles/claude/                # pinned Node + pinned Claude Code install
+  playbooks/{create,configure,allow-ip,destroy,pause,resume}.yml
 scripts/                       # thin .env-loading wrappers
 ```
+
+## Persistent data
+
+`~/data` on the box is a Hetzner Volume, mounted by-id with `nofail`. It is
+**delete-protected and never touched by `make destroy`** — that is the point.
+Everything outside `~/data` is ephemeral.
+
+Its name comes from `VOLUME_NAME` and is deliberately **not** derived from
+`BOX_NAME`: if the box name drifts, a name-derived volume would orphan under the
+old name and bill silently forever. Deleting the volume is a manual, deliberate
+act via the Hetzner console or CLI.
+
+`make pause` stops compute billing. It is not free — the volume bills by size
+regardless of power state, and the Primary IP bills while reserved.
+
+## Pinned toolchain
+
+Node and Claude Code are pinned to exact versions, installed from the official
+nodejs.org tarball with an upstream SHA256 check (no `curl | bash`). To bump
+either, edit the vars at the top of `ansible/roles/claude/tasks/main.yml`; the
+comment there has the one-liner for fetching a new checksum from
+`https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt`.

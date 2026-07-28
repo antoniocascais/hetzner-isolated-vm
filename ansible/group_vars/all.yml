@@ -6,19 +6,25 @@ hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
 box:
   name: "{{ lookup('env', 'BOX_NAME') | default('hetzner-isolated-vm', true) }}"
   server_type: "{{ lookup('env', 'BOX_TYPE') | default('cx23', true) }}"
-  image: "{{ lookup('env', 'BOX_IMAGE') | default('ubuntu-24.04', true) }}"
+  image: "{{ lookup('env', 'BOX_IMAGE') | default('ubuntu-26.04', true) }}"
   location: "{{ lookup('env', 'BOX_LOCATION') | default('nbg1', true) }}"
   user: "{{ lookup('env', 'BOX_USER') | default('claude', true) }}"
-  ssh_port: "{{ lookup('env', 'BOX_SSH_PORT') | default('22', true) }}"
+  ssh_port: "{{ lookup('env', 'BOX_SSH_PORT') | default('9427', true) }}"
   labels:
     managed_by: ansible
     purpose: hetzner-isolated-vm
 
-# Firewall: rule list is authoritative.
-#   []                  -> deny ALL inbound (lockdown state; outbound stays open)
-#   [{ssh from /32}]    -> bootstrap state (set by create play from your current IP)
+# Firewall: one firewall object PER box, named off box.name (not a constant) —
+# two boxes provisioned from this repo must never collide on a shared
+# firewall, since destroy.yml deletes the firewall unconditionally and that
+# would rip protection off whichever other box happened to share the name.
+#
+# Deliberately `box.name` verbatim, with no suffix: the already-deployed box
+# has a firewall named after it, so this derivation is a no-op there. Any
+# suffix would instead orphan that live firewall and silently build a second
+# one beside it on the next create/allow-ip run.
 firewall:
-  name: hetzner-isolated-vm
+  name: "{{ box.name }}"
   state: present
   labels:
     managed_by: ansible
@@ -26,10 +32,49 @@ firewall:
 
 firewall_rules: []
 
+# Persistent data volume. Survives `make destroy` (destroy.yml never touches
+# it) — that's the entire point, so its name is intentionally decoupled from
+# BOX_NAME: if BOX_NAME drifts (renamed box, blue/green swap, typo) the
+# volume must NOT silently orphan under the old name and bill forever. Set
+# VOLUME_NAME explicitly if you ever need to point at a different volume.
+volume:
+  name: "{{ lookup('env', 'VOLUME_NAME') | default('hetzner-isolated-vm-data', true) }}"
+  size: "{{ lookup('env', 'VOLUME_SIZE') | default('10', true) | int }}"
+  mount_path: "/home/{{ box.user }}/data"
+  labels:
+    managed_by: ansible
+    purpose: hetzner-isolated-vm-data
+  # DANGER: a fixed volume name + an env-driven box.name means a second box
+  # (blue/green, a typo'd BOX_NAME, anything) can point at the SAME volume
+  # name while a DIFFERENT box is still running with it mounted. The hcloud
+  # volume module attaches unconditionally on a name mismatch, with no
+  # guard of its own. Hetzner's own Terraform provider explicitly detaches
+  # before attaching when a volume's server changes (internal/volume/
+  # resource.go), and its Go client defines ErrorCodeVolumeAlreadyAttached
+  # -- evidence (inferred from official-client source, not an empirically
+  # confirmed API contract) that a bare attach like this one most likely
+  # gets REJECTED rather than silently moving the volume. create.yml
+  # refuses to attempt it by default regardless: even a "most likely safe"
+  # outcome is worth converting into a clear message instead of an opaque
+  # API failure, and "most likely" isn't "certainly". This only bypasses
+  # that refusal, and only when you explicitly set it — never flip it as a
+  # matter of routine.
+  allow_reattach: "{{ (lookup('env', 'VOLUME_ALLOW_REATTACH') | default('false', true)) | lower in ['1', 'true', 'yes', 'on'] }}"
+  # DANGER: a drifted/typo'd VOLUME_NAME makes create.yml provision a brand-
+  # new, empty volume under that name instead of finding your real one — it
+  # reports green while your actual data sits orphaned (and billing) under
+  # the old name. create.yml refuses this by default when any other volume
+  # already carries this tool's management labels; this only bypasses that
+  # refusal for a genuine second/blue-green deployment.
+  allow_new: "{{ (lookup('env', 'VOLUME_ALLOW_NEW') | default('false', true)) | lower in ['1', 'true', 'yes', 'on'] }}"
+
 # Claude runtime
 claude:
-  node_major: 22
-  workspace: "/home/{{ box.user }}/workspace"
+  # Must live under the volume, not the box's root disk — otherwise the
+  # volume protects nothing and `make destroy` still wipes all real work.
+  # Role order in configure.yml (bootstrap, volume, claude) already mounts
+  # the volume before this dir gets created, so no ordering change needed.
+  workspace: "{{ volume.mount_path }}/workspace"
   extra_packages:
     - git
     - ripgrep

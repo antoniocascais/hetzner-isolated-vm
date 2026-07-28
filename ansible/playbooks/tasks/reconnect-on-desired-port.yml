@@ -1,0 +1,14 @@
+---
+# Included (not inlined as a block) deliberately: meta: reset_connection does
+# NOT support `when` -- a block-level `when` around it is silently ignored
+# (Ansible prints a warning and runs it anyway), so it would fire on every
+# `make configure`, including the normal steady-state case where the port
+# never changed. include_tasks DOES honor `when`, so gating sits on the
+# include in configure.yml instead -- this file has no `when` of its own.
+# Don't "simplify" this back into an inline block; that's exactly the bug.
+- name: "Point this play's connection at BOX_SSH_PORT"
+  ansible.builtin.set_fact:
+    ansible_port: "{{ box.ssh_port }}"
+
+- name: "Drop the stale multiplexed connection so the new port takes effect"
+  ansible.builtin.meta: reset_connection

@@ -1,6 +1,45 @@
 ---
 # Idempotent host config, run over SSH after the box is created.
 
+# Removing a stale third-party apt source is host hygiene, not specific to
+# any package, and it only pays off if it happens before ANY apt operation
+# -- including "Update apt cache" right below, which otherwise hits every
+# configured source (a leftover NodeSource repo included) before the claude
+# role ever gets a chance to clean it up. This used to live in the claude
+# role, ahead of ITS OWN apt calls; that was correct for the role but not
+# for the play, since bootstrap's apt tasks run first. It belongs here.
+# The `nodesource` nodejs PACKAGE purge itself still lives in the claude
+# role, next to the tarball install that replaced it -- only the repo
+# definition + keyring (pure apt/filesystem hygiene) moved. NodeSource has
+# shipped both the legacy one-line list format and the newer deb822
+# .sources format across versions, so check for both rather than assuming
+# one.
+- name: "Find leftover NodeSource apt source definitions"
+  ansible.builtin.find:
+    paths: /etc/apt/sources.list.d
+    patterns:
+      - "nodesource.list"
+      - "nodesource.sources"
+    file_type: any
+  register: nodesource_apt_sources
+
+- name: "Find leftover NodeSource apt keyrings"
+  ansible.builtin.find:
+    paths:
+      - /etc/apt/keyrings
+      - /usr/share/keyrings
+    patterns: "nodesource*"
+    file_type: any
+  register: nodesource_apt_keyrings
+
+- name: "Remove leftover NodeSource apt source definitions + keyrings"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ nodesource_apt_sources.files + nodesource_apt_keyrings.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
 - name: "Set timezone"
   community.general.timezone:
     name: UTC
@@ -27,6 +66,42 @@
     test_command: uptime
   when: reboot_required_file.stat.exists
 
+# If "mask ssh.socket" succeeds but the very next task (start ssh.service
+# standalone) fails, the box is left with the socket masked and NO listener
+# at all -- silently, with nothing yet reconfigured on the sshd_config side.
+# That's a distinct lockout mode from the reachability check further below
+# (which covers a bad *config*), so it needs its own rescue carrying the
+# same warning, not just a bare task failure the operator has to notice.
+- name: "Take over SSH listening from socket activation"
+  block:
+    - name: "Mask ssh.socket (Ubuntu socket activation can override sshd_config's Port)"
+      ansible.builtin.systemd:
+        name: ssh.socket
+        masked: true
+        state: stopped
+        daemon_reload: true
+
+    - name: "Ensure ssh.service runs standalone (not socket-activated) before reconfiguring it"
+      ansible.builtin.systemd:
+        name: ssh.service
+        enabled: true
+        state: started
+  rescue:
+    - name: "FAIL LOUD: ssh.socket was masked but ssh.service failed to take over listening"
+      ansible.builtin.fail:
+        msg: >-
+          ssh.socket was masked/stopped but ssh.service failed to start
+          standalone -- this box may now have NO SSH listener at all.
+          DO NOT DISCONNECT YOUR CURRENT SESSION -- it may be the only way
+          in. Investigate over THIS session (try: systemctl status
+          ssh.service, journalctl -u ssh.service) before disconnecting.
+          If you have already disconnected: recovery is the Hetzner Cloud
+          web console, which only works if BOX_CONSOLE_PASSWORD was set
+          BEFORE `make create` (it's baked in by cloud-init at first boot
+          and cannot be added retroactively) -- if it wasn't, this box has
+          no fallback and the server likely needs to be rebuilt. Underlying
+          error: {{ ansible_failed_result.msg | default('see task output above') }}
+
 - name: "Install hardened sshd_config"
   ansible.builtin.template:
     src: sshd_config.j2
@@ -47,3 +122,81 @@
   ansible.builtin.systemd:
     name: ssh
     enabled: true
+
+# --- Reachability proof --------------------------------------------------
+# Port {{ box.ssh_port }} is the only NETWORK way into this box; whether a
+# Hetzner console fallback also works depends on whether BOX_CONSOLE_PASSWORD
+# was set before `make create` (see the rescue message below -- don't repeat
+# a fixed claim about it here either). Everything above is individually
+# defensible (mask ssh.socket, start ssh.service standalone, validate + install the new
+# config), but none of it proves a NEW inbound connection still works --
+# the play staying green just means the ALREADY-established control session
+# survived, which is exactly the case a socket-activation/Port mismatch
+# would NOT break. So: force the deferred "Restart sshd" handler to run now
+# (it's still only queued at this point, not fired -- handlers are deferred
+# to end-of-play by default), then drop our current connection and prove a
+# genuinely new one authenticates and works.
+- name: "Force the queued sshd restart to happen now, before we verify it"
+  ansible.builtin.meta: flush_handlers
+
+- name: "Prove a NEW SSH connection still works after reconfiguring sshd"
+  block:
+    - name: "Confirm sshd is accepting TCP connections on {{ box.ssh_port }} (from the control node)"
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: "{{ box.ssh_port }}"
+        state: started
+        timeout: 20
+      delegate_to: localhost
+      become: false
+
+    # ansible.cfg enables ControlPersist=60s, so a `meta: reset_connection`
+    # here is NOT sufficient on its own to prove a fresh handshake: it only
+    # warns (doesn't fail) if `ssh -O stop` can't reach the control socket,
+    # and if that socket survived, Ansible's next connection can silently
+    # multiplex back onto it -- passing without ever proving a new TCP +
+    # auth handshake against the reconfigured sshd. So this doesn't go
+    # through Ansible's connection plugin at all: it's a raw ssh binary
+    # invocation, delegated to the control node, with ControlMaster/
+    # ControlPath explicitly disabled so it CANNOT multiplex onto anything
+    # -- host/port/user/key are the same ones this play is already using
+    # (ansible_host/ansible_user/ansible_ssh_private_key_file/box.ssh_port),
+    # not hardcoded, so a BOX_SSH_PORT change can't desync this check.
+    - name: "Open a genuinely new, non-multiplexed SSH connection and run a trivial command over it"
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - ControlMaster=no
+          - -o
+          - ControlPath=none
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - -p
+          - "{{ box.ssh_port }}"
+          - -i
+          - "{{ ansible_ssh_private_key_file }}"
+          - "{{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}"
+          - uptime
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  rescue:
+    - name: "FAIL LOUD: sshd reconfiguration may have locked out new connections"
+      ansible.builtin.fail:
+        msg: >-
+          sshd on this box was just reconfigured and restarted, but a NEW
+          inbound SSH connection to port {{ box.ssh_port }} could not be
+          verified. DO NOT DISCONNECT YOUR CURRENT SESSION -- it may be the
+          only way in. Investigate and, if needed, fix /etc/ssh/sshd_config
+          over THIS session before disconnecting. If you have already
+          disconnected: recovery is the Hetzner Cloud web console, which
+          only works if BOX_CONSOLE_PASSWORD was set BEFORE `make create`
+          (it's baked in by cloud-init at first boot and cannot be added
+          retroactively) -- if it wasn't, this box has no fallback and the
+          server likely needs to be rebuilt. Underlying error:
+          {{ ansible_failed_result.msg | default('see task output above') }}

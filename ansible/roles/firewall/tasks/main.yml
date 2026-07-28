@@ -10,13 +10,25 @@
     fail_msg: "Hetzner API token missing. Set HCLOUD_TOKEN in .env."
 
 - name: "Guard against accidental world-open SSH"
+  # A rule can cover the SSH port without matching it exactly: Hetzner's
+  # `port` field also accepts the literal "any" and "lo-hi" ranges. An
+  # exact-string comparison misses both, so check all three shapes.
   ansible.builtin.assert:
     that:
-      - not (item.source_ips | default([]) | select('in', ['0.0.0.0/0', '::/0']) | list | length > 0
-             and (item.port | default('') | string) == (box.ssh_port | string))
+      - not (world_open and port_covers_ssh)
     fail_msg: >-
-      Refusing to open SSH (port {{ box.ssh_port }}) to 0.0.0.0/0.
-      Access must be your /32 only.
+      Refusing to open port {{ item.port | default('any/unset') }} to 0.0.0.0/0 —
+      it covers SSH (port {{ box.ssh_port }}). Access must be your /32 only.
+  vars:
+    world_open: "{{ (item.source_ips | default([]) | select('in', ['0.0.0.0/0', '::/0']) | list | length) > 0 }}"
+    port_str: "{{ item.port | default('') | string }}"
+    is_any: "{{ port_str == 'any' }}"
+    is_exact: "{{ port_str == (box.ssh_port | string) }}"
+    is_range: "{{ port_str is match('^[0-9]+-[0-9]+$') }}"
+    range_lo: "{{ port_str.split('-')[0] if is_range else 0 }}"
+    range_hi: "{{ port_str.split('-')[1] if is_range else 0 }}"
+    in_range: "{{ is_range and (range_lo | int) <= (box.ssh_port | int) and (box.ssh_port | int) <= (range_hi | int) }}"
+    port_covers_ssh: "{{ is_any or is_exact or in_range }}"
   loop: "{{ firewall_rules }}"
   loop_control:
     label: "{{ item.description | default(item.port | default('?')) }}"
@@ -35,15 +47,27 @@
     name: "{{ box.name }}"
   register: fw_server
 
-- name: "Fail if target server not found"
-  ansible.builtin.assert:
-    that:
-      - fw_server.hcloud_server_info | default([]) | length > 0
-    fail_msg: "Server '{{ box.name }}' not found — create it first (make create)."
-
-- name: "Attach firewall to server"
+# No hard fail when the server is missing: this role is reachable via
+# `make allow-ip` (allow-ip.yml), which is explicitly meant to work before
+# the box exists yet -- e.g. pre-seeding your IP right before `make create`.
+# The firewall OBJECT and its rules are created/updated above unconditionally
+# either way; only the ATTACH step (which needs a real server ID) is
+# conditional. A playbook that partially applies and then hard-fails is
+# worse than one that either fully works or cleanly no-ops with a clear
+# message -- so this reports the situation instead of aborting.
+- name: "Attach firewall to server (skipped if the server doesn't exist yet)"
   hetzner.hcloud.firewall_resource:
     api_token: "{{ hcloud_api_token }}"
     firewall: "{{ firewall.name }}"
     servers: ["{{ box.name }}"]
     state: present
+  when: fw_server.hcloud_server_info | default([]) | length > 0
+
+- name: "Note: firewall rules are set, but not attached to any server yet"
+  ansible.builtin.debug:
+    msg: >-
+      Server '{{ box.name }}' not found — firewall '{{ firewall.name }}'
+      and its rules are up to date, but not attached to anything yet. Run
+      'make create' to bring up the server (it attaches this firewall
+      automatically), or re-run this after it exists.
+  when: fw_server.hcloud_server_info | default([]) | length == 0

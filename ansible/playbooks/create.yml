@@ -35,6 +35,11 @@
         whitelist_cidr: "{{ myip.json.ip }}/32"
 
     - name: "Create server"
+      # no_log: user_data renders cloud-init, which embeds
+      # console_password_hash (a SHA-512 crypt hash). Without this it can
+      # leak into failure output or -v logs. The task's own args/result are
+      # suppressed; `created` (registered below) is still usable normally by
+      # later tasks — no_log only stops THIS task from printing it.
       hetzner.hcloud.server:
         api_token: "{{ hcloud_api_token }}"
         name: "{{ box.name }}"
@@ -45,6 +50,7 @@
         labels: "{{ box.labels }}"
         state: present
       register: created
+      no_log: true
 
     - name: "Create firewall with bootstrap SSH rule (your IP only)"
       hetzner.hcloud.firewall:
@@ -66,10 +72,129 @@
         servers: ["{{ box.name }}"]
         state: present
 
+    - name: "Look up existing volume (attachment-safety pre-check)"
+      hetzner.hcloud.volume_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ volume.name }}"
+      register: precheck_volume
+
+    - name: "Refuse to attach a volume that's currently on a different server"
+      # hetzner.hcloud.volume's _update_volume() (volume.py:238-246) calls
+      # attach() unconditionally on a name mismatch, with no prompt and no
+      # guard of its own -- confirmed by reading the module source. What
+      # Hetzner's API actually does with that bare attach is NOT verified
+      # against the server-side contract, but two pieces of official-client
+      # evidence point the same way: Hetzner's own Terraform provider
+      # explicitly Detaches before Attaching when a volume's server changes
+      # (internal/volume/resource.go), and its Go client defines
+      # ErrorCodeVolumeAlreadyAttached. Hetzner would not write a
+      # conditional detach into their own provider against their own API if
+      # a bare attach silently moved the volume -- so this most likely gets
+      # REJECTED outright rather than yanking a live filesystem out from
+      # under whatever's using it. "Most likely" isn't "certainly", and a
+      # running box with this volume mounted is not where you want to find
+      # out you were wrong -- so refuse by default regardless of which way
+      # it actually fails; converting even an unlikely bad outcome into a
+      # clear message instead of an opaque API error costs nothing.
+      # delete_protection does NOT help here regardless: it blocks
+      # `state: absent`, not attach(). Since volume.name is deliberately
+      # fixed (see the comment on `volume:` above) while box.name is
+      # env-driven, this WILL be hit on the first blue/green `make create`
+      # unless explicitly allowed.
+      #
+      # No-op in the normal cases: volume doesn't exist yet (nothing to
+      # attach away from anything), it's already attached to this box, or
+      # it's unattached (nothing running has it mounted either way).
+      vars:
+        existing_owner: >-
+          {{
+            (precheck_volume.hcloud_volume_info[0].server | default('', true))
+            if (precheck_volume.hcloud_volume_info | default([]) | length > 0)
+            else ''
+          }}
+      ansible.builtin.assert:
+        that: existing_owner in ['', box.name] or volume.allow_reattach
+        fail_msg: >-
+          Volume '{{ volume.name }}' is currently attached to server
+          '{{ existing_owner }}', not '{{ box.name }}'. Continuing would try
+          to attach it here instead -- Hetzner's own Terraform provider
+          detaches before attaching when a volume's server changes, which
+          suggests (not confirmed against the server-side contract) that a
+          bare attach like this one most likely gets REJECTED outright
+          rather than moving the volume. But "most likely" isn't
+          "certainly", and if it's wrong while '{{ existing_owner }}' is
+          running with this volume mounted, that's a live filesystem pulled
+          out from under a live machine: I/O errors at best, data
+          corruption at worst.
+
+          If this is a deliberate migration (e.g. a blue/green cutover):
+          first make sure '{{ existing_owner }}' is stopped — from an
+          environment pointed at it, `make pause` powers it off without
+          touching the volume or firewall (a stopped server has nothing
+          mounted to disrupt). Then re-run this with VOLUME_ALLOW_REATTACH=true
+          set (in your shell or .env) to confirm you mean it. This is a
+          conscious, explicit act — never make it the default.
+
+    - name: "Look up all volumes managed by this tool (orphan/drift detection)"
+      hetzner.hcloud.volume_info:
+        api_token: "{{ hcloud_api_token }}"
+        label_selector: "managed_by=ansible,purpose=hetzner-isolated-vm-data"
+      register: all_managed_volumes
+
+    - name: "Refuse to silently provision a second, orphaned data volume"
+      # If volume.name doesn't exist yet, the task below CREATES it fresh —
+      # empty. That's exactly right the first time ever run, but if
+      # VOLUME_NAME has drifted (typo, or "helpfully" changed to match a
+      # renamed box) it silently starts a second, empty volume while your
+      # real data sits under the old name, now unreferenced by this run and
+      # billing forever. Catch it by checking whether any OTHER volume
+      # already carries this tool's management labels — a fresh install has
+      # none, so this is a no-op there.
+      vars:
+        target_exists: "{{ (precheck_volume.hcloud_volume_info | default([]) | length) > 0 }}"
+        other_named_volumes: "{{ all_managed_volumes.hcloud_volume_info | default([]) | rejectattr('name', 'equalto', volume.name) | list }}"
+      ansible.builtin.assert:
+        that: target_exists or (other_named_volumes | length == 0) or volume.allow_new
+        fail_msg: >-
+          About to CREATE a brand-new, empty volume named '{{ volume.name }}',
+          but {{ other_named_volumes | length }} other volume(s) already carry
+          this tool's management labels:
+          {{ other_named_volumes | map(attribute='name') | list }}.
+          This usually means VOLUME_NAME drifted (typo, or changed to match a
+          renamed BOX_NAME) — your real data is likely on one of those,
+          about to be orphaned (and still billing) while a second, empty
+          volume gets attached here instead.
+
+          If this is deliberate (a genuine second or blue-green deployment),
+          set VOLUME_ALLOW_NEW=true (in your shell or .env) to confirm you
+          mean it. Otherwise, fix VOLUME_NAME to match the volume that
+          actually has your data.
+
+    - name: "Create + attach + format the persistent data volume"
+      # `format` is only honored by this module on first creation — see
+      # AnsibleHCloudVolume._create_volume() in the hcloud collection source
+      # (plugins/modules/volume.py). Once the volume exists, re-running this
+      # task takes the _update_volume() path instead, which never reads
+      # `format` at all. So this task structurally cannot reformat/wipe a
+      # volume that already exists, no matter how many times `make create`
+      # runs against it. delete_protection blocks `state: absent` too, as a
+      # second, independent guard (destroy.yml never targets this resource).
+      hetzner.hcloud.volume:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ volume.name }}"
+        size: "{{ volume.size }}"
+        server: "{{ box.name }}"
+        format: ext4
+        delete_protection: true
+        labels: "{{ volume.labels }}"
+        state: present
+      register: created_volume
+
     - name: "Next steps"
       ansible.builtin.debug:
         msg:
           - "Server '{{ box.name }}' is at {{ created.hcloud_server.ipv4_address }}"
           - "Inbound SSH (port {{ box.ssh_port }}) open from {{ whitelist_cidr }} only; all else denied."
-          - "Next: make configure   (auto-resolves the IP, installs Claude over SSH)"
+          - "Volume '{{ volume.name }}' ({{ volume.size }}GB) attached, ext4, delete-protected."
+          - "Next: make configure   (auto-resolves the IP, installs Claude over SSH, mounts {{ volume.mount_path }})"
           - "Then: ssh -i ~/.ssh/hetzner-isolated-vm {{ box.user }}@{{ created.hcloud_server.ipv4_address }}"

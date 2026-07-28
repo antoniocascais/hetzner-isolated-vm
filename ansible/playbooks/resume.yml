@@ -1,0 +1,69 @@
+---
+# Power the server back on. Idempotent: starting an already-running server
+# is a no-op — see start_server() in the hcloud collection's server.py,
+# which checks `status != STATUS_RUNNING` before acting.
+#
+# Volume attachment: Hetzner Cloud Volumes are attached/detached by an
+# explicit API call, independent of server power state — power_off/power_on
+# (what `state: stopped`/`started` drive) never call attach/detach. So a
+# paused-then-resumed server is expected to keep its volume attached. This
+# is documented Hetzner behavior, not something asserted by the module
+# source itself (server.py has no volume-handling code in the power-cycle
+# path at all) — re-checked below rather than just assumed, and this repo
+# has not run it against a real box to confirm.
+- name: Resume (power on) the server
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  tasks:
+    - name: "Require token"
+      ansible.builtin.assert:
+        that: hcloud_api_token | length > 0
+        fail_msg: "Set HCLOUD_TOKEN in .env"
+
+    - name: "Look up server"
+      hetzner.hcloud.server_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+      register: resume_server
+
+    - name: "Fail if server missing"
+      ansible.builtin.assert:
+        that: resume_server.hcloud_server_info | default([]) | length > 0
+        fail_msg: "Server '{{ box.name }}' not found — run 'make create' first."
+
+    - name: "Power on the server"
+      hetzner.hcloud.server:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+        state: started
+      register: resumed
+
+    - name: "Re-check the data volume is still attached"
+      hetzner.hcloud.volume_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ volume.name }}"
+      register: resume_volume
+
+    - name: "Warn loudly if the volume did not survive the power cycle attached"
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: volume '{{ volume.name }}' is attached to
+          '{{ resume_volume.hcloud_volume_info[0].server | default("nothing", true) }}',
+          not '{{ box.name }}'. ~/data will be missing on the box. Hetzner
+          Volumes are expected to stay attached across power cycles, so this
+          means something unexpected happened — do not assume the data is
+          gone, but do not `mkfs` anything either. Run 'make create' to
+          reattach the existing volume (it will NOT be reformatted — see
+          the comment on the volume task in create.yml), then 'make
+          configure' to remount it.
+      when: resume_volume.hcloud_volume_info[0].server | default('') != box.name
+
+    - name: "Next steps"
+      ansible.builtin.debug:
+        msg:
+          - "Server '{{ box.name }}' is at {{ resumed.hcloud_server.ipv4_address }}."
+          - "The Primary IP is a persistent resource bound to the server, not released by 'make pause', so it normally does NOT change across a pause/resume cycle — but if it looks wrong, or your own home IP changed while paused, run: make allow-ip"
+          - "Give the box a few seconds to finish booting before SSH/make ssh."

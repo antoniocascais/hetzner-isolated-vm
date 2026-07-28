@@ -19,6 +19,6 @@ PY
 
 key="${BOX_SSH_KEY:-$HOME/.ssh/hetzner-isolated-vm}"
 key="${key/#\~/$HOME}"
-exec ssh -i "${key}" -p "${BOX_SSH_PORT:-22}" \
+exec ssh -i "${key}" -p "${BOX_SSH_PORT:-9427}" \
   -o StrictHostKeyChecking=accept-new \
   "${BOX_USER:-claude}@${ip}" "$@"

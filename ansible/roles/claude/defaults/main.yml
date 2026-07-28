@@ -1,0 +1,18 @@
+---
+# Role defaults -- lowest Ansible variable precedence, so group_vars/all.yml
+# can override this without editing this role.
+#
+# CLAUDE.md.j2 documents operating instructions for `claude-fw` (egress
+# firewall) and `claude-notify` (Telegram escalation channel). Neither tool
+# is provisioned by this repo -- see RUNBOOK.md "Known gaps / TODO": claude-fw
+# was hand-built on the live box only, and claude-notify was never ported at
+# all. A box built from this repo today has NO egress firewall and NO notify
+# channel; the template must say so explicitly rather than describing P4b's
+# future tooling as already present (that inversion -- an agent believing
+# egress is contained when it is wide open -- is the actual defect this
+# flag exists to prevent).
+#
+# Flip to true ONLY once the role that installs claude-fw + claude-notify
+# actually lands (P4b) -- flipping this alone, without that provisioning,
+# would just make the doc lie in the opposite direction.
+claude_fw_and_notify_enabled: false
