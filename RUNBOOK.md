@@ -69,26 +69,35 @@ a rogue dep can trash the box but not your Hetzner account.
   your /32 (extend the firewall rule list), or tunnel over SSH:
   `ssh -i ~/.ssh/hetzner-isolated-vm -p 9427 -L 8080:localhost:8080 claude@<box-ip>`
   (or `make ssh EXTRA='-L 8080:localhost:8080'`, which fills in the port for you).
+- **"REMOTE HOST IDENTIFICATION HAS CHANGED" after `make destroy` + `make create`**:
+  expected, not a MITM alarm — a rebuilt box is a fresh install with a fresh SSH host
+  key, and SSH (`StrictHostKeyChecking=accept-new`, used throughout this repo — see
+  `ansible/ansible.cfg` for Ansible's own connections, and `scripts/ssh.sh` for
+  `make ssh`, the path most likely to be what you're running when you hit this)
+  correctly hard-fails the moment a *known* host's key changes
+  rather than silently trusting it. If your client's `known_hosts` has a stale entry
+  for the box's address, remove just that entry (`ssh-keygen -R <ip-or-host>`) and
+  reconnect — the new key will be trusted on that next first connection. **Do not**
+  set `StrictHostKeyChecking=no` to work around this; that disables the exact check
+  that's protecting you. Whether a rebuilt box actually reuses its previous IP often
+  enough for this to bite in practice is Hetzner allocation behavior this repo doesn't
+  control or verify — treat the above as what to do *if* it happens, not a prediction
+  that it will.
 
 ## Break-glass (locked out, allow-ip not enough)
 
-If SSH still fails after `make allow-ip` (e.g. sshd broken, or listening on a port
-the firewall no longer allows), use the Hetzner web console (VNC): log in as `claude`
-with `BOX_CONSOLE_PASSWORD`.
+Two mechanisms exist. **Start with Rescue** — it's the only path that doesn't depend on
+something having been prepared before `make create`. It has not been walked end to end
+(see below), but it's the one that can work on any box. The web console is faster *when
+it's available*, but it only is if you happened to set `BOX_CONSOLE_PASSWORD` before
+`make create`; if you didn't (or aren't sure), don't waste time on it — go straight to
+Rescue.
 
-This only works if you set `BOX_CONSOLE_PASSWORD` in `.env` **before `make create`** —
-it is baked in by cloud-init at first boot and cannot be added to a running box from
-here. If it was unset at create time, the console shows a login prompt you have no
-credentials for. Verify you can actually log in via the console once, while SSH still
-works — an untested break-glass is not a break-glass.
+### Hetzner Rescue System (no advance setup required)
 
-### Second break-glass: the Hetzner Rescue System (works with no console password)
-
-**This one does not depend on anything having been set up in advance**, which makes it
-the real recovery path for a box created without `BOX_CONSOLE_PASSWORD`. Hetzner can
-boot the server into a rescue Linux and hand you a fresh root password, optionally
-injecting your SSH key. The server's disk is untouched — you mount it and fix whatever
-you broke.
+Hetzner can boot the server into a rescue Linux and hand you a fresh root password,
+optionally injecting your SSH key, **regardless of whether `BOX_CONSOLE_PASSWORD` was
+ever set.** The server's disk is untouched — you mount it and fix whatever you broke.
 
 **The catch nobody hits until they need it: the rescue system's sshd listens on port
 22, and our Cloud Firewall only opens `BOX_SSH_PORT`.** So rescue boots fine and you
@@ -107,14 +116,27 @@ it.
 5. Disable Rescue in the console, reboot back into the normal system, confirm SSH works
    on `BOX_SSH_PORT`, then **remove the temporary port-22 rule**.
 
-Only if rescue also fails is `make destroy` + `make create` the answer (which preserves
-`~/data`, but nothing else).
-
 **Not verified end to end.** The mechanism is confirmed — `enable_rescue` is in the
 Hetzner SDK this repo vendors, and it returns a root password and accepts SSH key IDs.
 The port-22 firewall interaction is inferred from our own firewall rules (`create.yml`
 opens only `BOX_SSH_PORT`), not from a rescue boot anyone has actually performed here.
 Walk it once on a throwaway box before you need it.
+
+### Hetzner web console / VNC (faster, but only if you prepared for it)
+
+If SSH still fails after `make allow-ip` (e.g. sshd broken, or listening on a port
+the firewall no longer allows), and you did set `BOX_CONSOLE_PASSWORD`, use the
+Hetzner web console (VNC): log in as `claude` with `BOX_CONSOLE_PASSWORD`.
+
+This only works if you set `BOX_CONSOLE_PASSWORD` in `.env` **before `make create`** —
+it is baked in by cloud-init at first boot and cannot be added to a running box from
+here. If it was unset at create time, the console shows a login prompt you have no
+credentials for — in that case this path is a dead end and you want Rescue above, not
+this one. Verify you can actually log in via the console once, while SSH still works —
+an untested break-glass is not a break-glass.
+
+Only if neither of the above gets you back in is `make destroy` + `make create` the
+answer (which preserves `~/data`, but nothing else).
 
 **`ssh.socket` is masked during bootstrap.** On Ubuntu 26.04 socket activation can
 override `sshd_config`'s `Port`, so a config saying 9427 may not be what actually
