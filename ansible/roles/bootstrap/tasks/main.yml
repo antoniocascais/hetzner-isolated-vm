@@ -162,6 +162,14 @@
     # -- host/port/user/key are the same ones this play is already using
     # (ansible_host/ansible_user/ansible_ssh_private_key_file/box.ssh_port),
     # not hardcoded, so a BOX_SSH_PORT change can't desync this check.
+    #
+    # StrictHostKeyChecking=accept-new is set explicitly below (rather than
+    # relying on ansible.cfg's ssh_args, which sets the same thing) because
+    # this is a raw `ssh` binary invocation via the command module, not an
+    # Ansible connection-plugin connection -- it never reads ansible.cfg's
+    # [ssh_connection] settings at all. If the TOFU policy in ansible.cfg
+    # ever changes, this line and scripts/ssh.sh's equivalent must be updated
+    # to match by hand; neither picks up ansible.cfg automatically.
     - name: "Open a genuinely new, non-multiplexed SSH connection and run a trivial command over it"
       ansible.builtin.command:
         argv:

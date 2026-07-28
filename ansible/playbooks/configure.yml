@@ -107,7 +107,19 @@
         ansible_port: "{{ cfg_connect_port }}"
         ansible_ssh_private_key_file: "{{ lookup('env', 'BOX_SSH_KEY') | default('~/.ssh/hetzner-isolated-vm', true) }}"
         ansible_python_interpreter: /usr/bin/python3
-        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+        # No ansible_ssh_common_args here: the TOFU policy (accept-new) is set
+        # once, for every host and play in this repo, via ssh_args in
+        # ansible.cfg -- see the comment block there for why (host_key_checking
+        # interaction, ssh_args-vs-common_args composition, and the two other
+        # files that must carry their own copy of this flag because they invoke
+        # `ssh` directly instead of going through this connection plugin). Don't
+        # re-add a per-host override here without reading that comment first --
+        # ssh_args and ansible_ssh_common_args compose additively (ssh.py:839-844
+        # then :895-899), and ssh_args is placed first, so OpenSSH's
+        # first-value-wins behavior for a repeated `-o` (verified in ansible.cfg's
+        # comment) means: a re-add with the SAME value here is merely redundant,
+        # but a re-add with a DIFFERENT value would be silently ignored, not
+        # applied -- a trap, not just a needless second place to keep in sync.
         volume_device: "{{ cfg_volume.hcloud_volume_info[0].linux_device }}"
 
 - name: Configure the box over SSH
