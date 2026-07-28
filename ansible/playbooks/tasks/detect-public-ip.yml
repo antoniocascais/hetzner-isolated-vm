@@ -2,9 +2,9 @@
 # Ask ipify for the operator's public IP and decide whether the answer is
 # safe to use in a firewall /32 rule. Written to be included from any
 # playbook under ansible/playbooks/ so multiple playbooks share one
-# implementation instead of drifting: included directly by allow-ip.yml:13
-# and create.yml:28, and pulled in transitively by configure.yml, which
-# imports allow-ip.yml at configure.yml:10.
+# implementation instead of drifting: included directly by allow-ip.yml and
+# create.yml, and pulled in transitively by configure.yml (which imports
+# allow-ip.yml).
 #
 # Included as:
 #   ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/detect-public-ip.yml"
@@ -98,18 +98,16 @@
       response format changed. Check connectivity to api.ipify.org and
       re-run.
   vars:
+    # Octet alternation deliberately identical to ipv4_slash32 in
+    # roles/firewall/tasks/main.yml ("IPv4 octets, no leading zeros" note
+    # there) — keep the two in agreement.
     ipv4_strict_regex: '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}\Z'
 
 - name: "Reject syntactically valid IPv4 addresses that aren't a usable public source"
-  # Syntactic validity alone isn't enough: 0.0.0.0, 127.0.0.1, a link-local
-  # 169.254.x.x address, or an RFC1918/CGNAT address are all perfectly valid
-  # IPv4 strings, and every one of them would produce a firewall /32 rule
-  # that is either useless (matches nobody) or misleading (looks like a real
-  # allow rule but isn't the operator's address). ipify cannot legitimately
-  # hand back an address in any of these ranges as "the client's public IP",
-  # since by the time a packet reaches ipify over the public internet it has
-  # already been NATed to a real public address — so seeing one of these
-  # here means the real ipify service didn't answer.
+  # Why these ranges are hard failures rather than valid-but-unlucky
+  # answers: see "Why go past ..." in this file's header — ipify cannot
+  # legitimately return a non-public source address, so any of these means
+  # something other than the real service answered.
   vars:
     ip_octets: "{{ detect_ip_response.json.ip.split('.') | map('int') | list }}"
     o1: "{{ ip_octets[0] }}"

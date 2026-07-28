@@ -70,28 +70,22 @@ a rogue dep can trash the box but not your Hetzner account.
   `ssh -i ~/.ssh/hetzner-isolated-vm -p 9427 -L 8080:localhost:8080 claude@<box-ip>`
   (or `make ssh EXTRA='-L 8080:localhost:8080'`, which fills in the port for you).
 - **"REMOTE HOST IDENTIFICATION HAS CHANGED" after `make destroy` + `make create`**:
-  expected, not a MITM alarm — a rebuilt box is a fresh install with a fresh SSH host
-  key, and SSH (`StrictHostKeyChecking=accept-new`, used throughout this repo — see
-  `ansible/ansible.cfg` for Ansible's own connections, and `scripts/ssh.sh` for
-  `make ssh`, the path most likely to be what you're running when you hit this)
-  correctly hard-fails the moment a *known* host's key changes
-  rather than silently trusting it. If your client's `known_hosts` has a stale entry
-  for the box's address, remove just that entry (`ssh-keygen -R <ip-or-host>`) and
-  reconnect — the new key will be trusted on that next first connection. **Do not**
-  set `StrictHostKeyChecking=no` to work around this; that disables the exact check
-  that's protecting you. Whether a rebuilt box actually reuses its previous IP often
-  enough for this to bite in practice is Hetzner allocation behavior this repo doesn't
-  control or verify — treat the above as what to do *if* it happens, not a prediction
-  that it will.
+  expected, not a MITM alarm — a rebuilt box is a fresh install with a fresh SSH
+  host key, and `StrictHostKeyChecking=accept-new` (set in `ansible/ansible.cfg`
+  for Ansible's connections and `scripts/ssh.sh` for `make ssh`) correctly
+  hard-fails the moment a *known* host's key changes rather than silently trusting
+  it. Remove just the stale `known_hosts` entry (`ssh-keygen -R <ip-or-host>`) and
+  reconnect — the new key is trusted on that next first connection. **Do not** set
+  `StrictHostKeyChecking=no` to work around this; that disables the exact check
+  that's protecting you. (Whether a rebuilt box reuses its previous IP often enough
+  for this to bite is unverified — this is what to do *if* it happens.)
 
 ## Break-glass (locked out, allow-ip not enough)
 
-Two mechanisms exist. **Start with Rescue** — it's the only path that doesn't depend on
-something having been prepared before `make create`. It has not been walked end to end
-(see below), but it's the one that can work on any box. The web console is faster *when
-it's available*, but it only is if you happened to set `BOX_CONSOLE_PASSWORD` before
-`make create`; if you didn't (or aren't sure), don't waste time on it — go straight to
-Rescue.
+Two mechanisms exist. **Start with Rescue** — it needs nothing prepared before
+`make create` (not yet walked end to end; see below). The web console is faster, but
+only works if `BOX_CONSOLE_PASSWORD` was set before create — if you didn't set it,
+or aren't sure, go straight to Rescue.
 
 ### Hetzner Rescue System (no advance setup required)
 

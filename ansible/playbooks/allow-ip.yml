@@ -20,18 +20,13 @@
 
     - name: "Record whether the target server exists"
       # Must be a set_fact, not a task-level `vars:` entry: task-level vars
-      # (as used in the "Determine which port(s) to allow" task) only live
-      # for the duration of that one task and are undefined afterwards. This
-      # value is read by `when:` on the two "Result" debug tasks near the
-      # bottom of this play, which run well after that task — a task-local
-      # `vars: server_exists: ...` there previously left it undefined by the
-      # time those `when:` clauses evaluated (proven against ansible-core
-      # 2.21.1: `'server_exists' is undefined`), which meant this failed
-      # AFTER the firewall had already been written, and aborted
-      # `configure.yml` (which imports this playbook) before it ever reached
-      # the bootstrap role. set_fact promotes it to a real fact, which (like
-      # ssh_transition_fallback_ports, set in the "Determine which port(s)
-      # to allow" task) persists for the rest of this play.
+      # live only for their one task, and this value is read by `when:` on
+      # the two "Result" debug tasks at the bottom of this play. As a
+      # task-local var it was undefined by then (proven against ansible-core
+      # 2.21.1: `'server_exists' is undefined`) — failing AFTER the firewall
+      # had already been written, and aborting configure.yml (which imports
+      # this playbook) before it reached the bootstrap role. set_fact
+      # persists for the rest of the play.
       ansible.builtin.set_fact:
         server_exists: "{{ (aip_server.hcloud_server_info | default([]) | length) > 0 }}"
 

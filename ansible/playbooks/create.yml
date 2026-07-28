@@ -58,40 +58,22 @@
             source_ips: ["{{ whitelist_cidr }}"]
             description: "SSH (whitelisted IP)"
 
-    # Routed through the `firewall` role (ansible/roles/firewall/tasks/main.yml)
-    # instead of an inline hetzner.hcloud.firewall task, so the create path
-    # runs the same "Guard against accidental world-open SSH" assert that
-    # allow-ip.yml already goes through. Before this change create.yml built
-    # its SSH rule directly and applied it with its own inline task, which
-    # never touched the role or its guard at all — proven by reading this
-    # file's prior content (an inline `hetzner.hcloud.firewall` task here,
-    # no `include_role`) and the role file (the guard only exists inside
-    # roles/firewall/tasks/main.yml). That divergence meant a bug in how
-    # this rule was built (e.g. a whitelist_cidr that wasn't actually a
-    # /32) would reach a real firewall unchecked on `make create`, even
-    # though `make allow-ip` was protected. This also replaces the separate
-    # "Attach firewall to server" task below (now removed): the role
-    # already attaches (its own "Attach firewall to server" task,
-    # conditional on the server existing), and running both would attach
-    # twice. Ordering: the role's attach step looks up the server by name
-    # and only attaches if found; "Create server" above has already run in
-    # this same play by the time this executes, so the lookup should find
-    # it — inferred from task order in this file, not confirmed against
-    # Hetzner's API (no token on this box; nothing here has run against
-    # real infrastructure). This is the same read-after-write assumption the
-    # pre-existing inline attach task already made (it addressed the server
-    # by name with no existence check of its own) — but NOT the same failure
-    # mode if that assumption is wrong: the old inline `firewall_resource`
-    # task errored and hard-failed the play if the server wasn't found. The
-    # role's attach step is conditional (`when: ... length > 0`) so that
-    # `make allow-ip` can pre-seed an IP before a box exists — reused as-is
-    # here, that same conditional would silently SKIP the attach instead of
-    # failing, and the play would carry on to this file's own closing banner
-    # ("Inbound SSH open from <cidr> only; all else denied.") on a server
-    # that is actually unprotected. `firewall_require_attach: true` below
-    # restores the loud failure on this path specifically (see its assert
-    # in roles/firewall/tasks/main.yml, "Server must exist on this path"),
-    # without changing allow-ip.yml's behaviour at all.
+    # Routed through the `firewall` role rather than an inline
+    # hetzner.hcloud.firewall task so this path runs the same "Guard against
+    # accidental world-open SSH" assert that allow-ip.yml goes through — the
+    # guard exists only in roles/firewall/tasks/main.yml, so an inline apply
+    # here would let a malformed rule (e.g. a whitelist_cidr that isn't
+    # actually a /32) reach a real firewall unchecked on `make create`. The
+    # role also performs the attach; do not add a separate firewall_resource
+    # task here — it would attach twice. The role's attach step looks up the
+    # server by name; "Create server" above has already run in this play, so
+    # the lookup should find it — inferred from task order, not confirmed
+    # against Hetzner's API (nothing here has run against real
+    # infrastructure). If the lookup comes up empty,
+    # `firewall_require_attach: true` makes the role hard-fail instead of
+    # silently skipping the attach and letting this play end on its
+    # "Inbound SSH open from <cidr> only" banner with no firewall attached —
+    # full rationale at "Server must exist on this path" in roles/firewall/tasks/main.yml.
     - name: "Apply firewall (guard, create/update rules, attach to the just-created server)"
       ansible.builtin.include_role:
         name: firewall
