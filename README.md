@@ -9,11 +9,18 @@ radius of "what if Claude goes crazy" on the inbound + cloud-account axes.
 A firewall controls **who can reach the box**, not **what the box can do**.
 This setup gives you:
 
-- **Inbound: SSH from your IP only.** The Hetzner Cloud Firewall allows your
-  configured SSH port (`BOX_SSH_PORT`, default **9427**) from your current public
-  /32 and denies everything else. No other public surface. Note this is enforced
-  **off-box** at the Hetzner API layer — there is no local nftables input chain,
-  so the whitelist survives anything that happens on the box itself.
+- **Inbound: SSH from your IP only, in steady state.** The Hetzner Cloud
+  Firewall allows your configured SSH port (`BOX_SSH_PORT`, default **9427**)
+  from your current public /32 and denies everything else once it's attached.
+  Two caveats to "no other public surface": `make create` boots the server
+  before the firewall role attaches to it, so there's a short window where the
+  box sits on the open internet with no filtering at all; and during an SSH
+  port change, `make allow-ip` can temporarily carry an extra transitional
+  port rule alongside the main one (still narrowed to your /32, never opened
+  wide) until the new port is confirmed reachable. Note the steady-state rule
+  is enforced **off-box** at the Hetzner API layer — there is no local
+  nftables input chain, so the whitelist survives anything that happens on the
+  box itself.
   The /32 is what actually protects you, not the port number: anyone already on
   the whitelisted address can port-scan you in seconds, and anyone else is dropped
   before they reach sshd. If you'd nonetheless rather this public repo not name
@@ -40,9 +47,9 @@ make create    ── Hetzner API (localhost) ──> creates server (cloud-init
                                                dedicated pubkey, hardened sshd)
                                              + firewall: SSH from YOUR /32 only
                                              + data volume (ext4, delete-protected)
-make configure ── resolves IP + volume device via API ──> waits for SSH, then
+make configure ── Hetzner API ──> re-assert firewall from your CURRENT IP
+                ── resolves IP + volume device via API ──> waits for SSH, then
                    bootstrap + mount ~/data + install pinned Claude Code
-                ── Hetzner API ──> re-assert firewall from your CURRENT IP
 make pause     ── powers the server off (volume and firewall untouched)
 make resume    ── powers it back on
 make destroy   ── deletes server + firewall. NEVER the volume.
@@ -106,7 +113,7 @@ regenerate — existing tokens can't be revealed.
 ```bash
 cp .env.example .env       # set HCLOUD_TOKEN at minimum
 make create                # creates box + firewall (SSH from your IP)
-make configure             # installs Claude over SSH; re-asserts firewall
+make configure             # re-asserts firewall from your current IP; installs Claude over SSH
 ```
 
 Then:

@@ -5,7 +5,7 @@
 ```bash
 cp .env.example .env          # set HCLOUD_TOKEN (dedicated project!)
 make create                   # server + firewall (SSH from your current IP)
-make configure                # bootstrap + Claude over SSH; re-assert firewall
+make configure                # re-assert firewall; bootstrap + Claude over SSH
 ```
 
 `make create` prints the box's public IP. `make configure` resolves it
@@ -110,11 +110,18 @@ it.
 5. Disable Rescue in the console, reboot back into the normal system, confirm SSH works
    on `BOX_SSH_PORT`, then **remove the temporary port-22 rule**.
 
-**Not verified end to end.** The mechanism is confirmed — `enable_rescue` is in the
-Hetzner SDK this repo vendors, and it returns a root password and accepts SSH key IDs.
-The port-22 firewall interaction is inferred from our own firewall rules (`create.yml`
-opens only `BOX_SSH_PORT`), not from a rescue boot anyone has actually performed here.
-Walk it once on a throwaway box before you need it.
+`make allow-ip` is safe to run at any point during this, including while the temporary
+port-22 rule is in place — it won't touch or remove that rule until the box actually
+answers on `BOX_SSH_PORT` again, and if you added the rule wide-open under pressure,
+`allow-ip` automatically narrows it to your detected /32 rather than leaving it exposed.
+
+**Not verified end to end.** Nothing here drives Rescue via code — the procedure above
+is manual console clicks, and `enable_rescue` appears nowhere in this repo's own
+`ansible/`, `scripts/`, or `Makefile` sources. The SDK having the method elsewhere is
+not evidence for a procedure that's entirely manual. The port-22 firewall interaction
+is inferred from our own firewall rules (`create.yml` opens only `BOX_SSH_PORT`), not
+from a rescue boot anyone has actually performed here. Walk it once on a throwaway box
+before you need it.
 
 ### Hetzner web console / VNC (faster, but only if you prepared for it)
 
@@ -158,12 +165,29 @@ make pause          # powers the server off; volume + firewall untouched
 make resume         # powers it back on
 ```
 
-Both are idempotent. **Paused is not free**: the volume bills by size whatever the
-power state, and the Primary IP bills while reserved. `pause` only stops compute.
+Both are idempotent. **Paused is probably not free**: per Hetzner's published pricing
+(not verified against an actual invoice from this repo), the volume bills by size
+whatever the power state, and the Primary IP bills while reserved. `pause` only stops
+compute billing — check the Hetzner Cloud Console if you need to confirm the rest.
 
-`resume` re-checks that the volume is still attached to this box. If it warns that
-it isn't, do **not** assume data loss and do **not** format anything — run
-`make create` (which reattaches without reformatting) then `make configure`.
+`resume` re-checks that the volume is still attached to this box. The warning it
+prints splits into two genuinely different cases — read which one you got before
+doing anything:
+
+- **Attached to a different server.** Your data is intact — do **not** assume data
+  loss and do **not** format anything. But `make create` will not just quietly
+  reattach it: `ansible/playbooks/create.yml` refuses to attach a volume that's
+  attached elsewhere unless `VOLUME_ALLOW_REATTACH=true` is set, and only after
+  the other server is stopped (`make pause`, run from an environment pointed at
+  *that* box — a live filesystem can't be safely pulled out from under a running
+  machine). So: pause the other box, set `VOLUME_ALLOW_REATTACH=true` (shell or
+  `.env`), run `make create` (reattaches, does **not** reformat), then
+  `make configure`, then unset `VOLUME_ALLOW_REATTACH` again — it's a one-time
+  confirmation, not a standing setting. See `.env.example` for the full rationale.
+- **Gone entirely.** This is not a reattach — the data itself is gone unless you
+  have an external backup. `make create` in this case provisions a brand-new,
+  *empty* volume under the same name; it is not a restore. There is nothing else
+  this repo can do to recover the old contents.
 
 ## Bumping Node / Claude Code
 
@@ -203,6 +227,13 @@ egress is locked down.
       proven without infrastructure. **Do a throwaway-box dry run before changing
       `BOX_SSH_PORT` on a box you care about**, and read the Rescue System section
       above first — this is precisely the failure it exists for.
+- [ ] **`~/.claude/CLAUDE.md` on the box does not converge.** The `claude` role
+      templates it with `force: false` (`ansible/roles/claude/tasks/main.yml`), and
+      `configure.yml` includes that role on every run — so the first `make configure`
+      writes the file, and every one after that leaves an existing copy untouched.
+      Deliberate: it protects on-box edits from being clobbered. But it also means a
+      template change here never reaches a box that already has the file. To pick one
+      up, delete `~/.claude/CLAUDE.md` on the box and re-run `make configure`.
 - [ ] **This repo does not converge a box created before the data volume existed.**
       `configure.yml` asserts the volume exists and is attached, and aborts if not,
       so `make configure` will not run against such a box. This is deliberate: the

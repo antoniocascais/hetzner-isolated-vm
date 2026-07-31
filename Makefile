@@ -10,7 +10,7 @@ help:
 	@echo "Targets:"
 	@echo "  install     Build .venv (pinned Python deps) + install Ansible collections"
 	@echo "  create      Create the server + firewall + data volume (SSH from your current IP only)"
-	@echo "  configure   Install Claude over SSH; mount the data volume; re-assert firewall from current IP"
+	@echo "  configure   Re-assert firewall from current IP; install Claude over SSH; mount the data volume"
 	@echo "  allow-ip    Re-detect your IP and update the firewall (run if your IP changed)"
 	@echo "  ssh         Resolve the box IP via API and SSH in"
 	@echo "  destroy     Delete the server + firewall (prompts for confirmation); NEVER deletes the volume"
