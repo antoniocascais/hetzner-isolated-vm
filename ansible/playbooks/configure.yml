@@ -1,6 +1,6 @@
 ---
-# Phase 2: resolve the server's public IP, configure it over SSH, then
-# re-assert the firewall rule from your CURRENT IP (handles IP drift).
+# Phase 2: re-assert the firewall rule from your CURRENT IP (handles IP
+# drift), THEN resolve the server's public IP and configure it over SSH.
 #
 # allow-ip runs FIRST, not last: if your IP has drifted since the last
 # create/configure, the firewall still only allows the OLD IP. Doing the

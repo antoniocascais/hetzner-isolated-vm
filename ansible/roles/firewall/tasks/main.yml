@@ -9,10 +9,10 @@
       - hcloud_api_token | length > 0
     fail_msg: "Hetzner API token missing. Set HCLOUD_TOKEN in .env."
 
-- name: "Guard against accidental world-open SSH"
+- name: "Guard against accidental world-open rules covering BOX_SSH_PORT"
   # A rule can cover the SSH port without matching it exactly: Hetzner's
   # `port` field also accepts the literal "any" and "lo-hi" ranges.
-  # port_covers_ssh (unchanged below) checks all three shapes.
+  # port_covers_ssh checks all three shapes.
   #
   # source_ips scope: every entry on an SSH-covering rule must name exactly
   # one host — /32 for IPv4, /128 for IPv6. Rejecting only the literal

@@ -95,12 +95,14 @@
           DO NOT DISCONNECT YOUR CURRENT SESSION -- it may be the only way
           in. Investigate over THIS session (try: systemctl status
           ssh.service, journalctl -u ssh.service) before disconnecting.
-          If you have already disconnected: recovery is the Hetzner Cloud
-          web console, which only works if BOX_CONSOLE_PASSWORD was set
-          BEFORE `make create` (it's baked in by cloud-init at first boot
-          and cannot be added retroactively) -- if it wasn't, this box has
-          no fallback and the server likely needs to be rebuilt. Underlying
-          error: {{ ansible_failed_result.msg | default('see task output above') }}
+          If you have already disconnected: recovery is the Hetzner Rescue
+          System (see RUNBOOK.md's "Break-glass" section) -- it needs
+          nothing prepared in advance and works regardless of whether
+          BOX_CONSOLE_PASSWORD was ever set. The Hetzner Cloud web console
+          is faster but only works if BOX_CONSOLE_PASSWORD was set BEFORE
+          `make create` (it's baked in by cloud-init at first boot and
+          cannot be added retroactively). Underlying error:
+          {{ ansible_failed_result.msg | default('see task output above') }}
 
 - name: "Install hardened sshd_config"
   ansible.builtin.template:
@@ -199,9 +201,11 @@
           verified. DO NOT DISCONNECT YOUR CURRENT SESSION -- it may be the
           only way in. Investigate and, if needed, fix /etc/ssh/sshd_config
           over THIS session before disconnecting. If you have already
-          disconnected: recovery is the Hetzner Cloud web console, which
-          only works if BOX_CONSOLE_PASSWORD was set BEFORE `make create`
-          (it's baked in by cloud-init at first boot and cannot be added
-          retroactively) -- if it wasn't, this box has no fallback and the
-          server likely needs to be rebuilt. Underlying error:
+          disconnected: recovery is the Hetzner Rescue System (see
+          RUNBOOK.md's "Break-glass" section) -- it needs nothing prepared
+          in advance and works regardless of whether BOX_CONSOLE_PASSWORD
+          was ever set. The Hetzner Cloud web console is faster but only
+          works if BOX_CONSOLE_PASSWORD was set BEFORE `make create` (it's
+          baked in by cloud-init at first boot and cannot be added
+          retroactively). Underlying error:
           {{ ansible_failed_result.msg | default('see task output above') }}

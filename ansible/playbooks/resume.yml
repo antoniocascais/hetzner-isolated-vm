@@ -47,19 +47,45 @@
         name: "{{ volume.name }}"
       register: resume_volume
 
+    # hcloud_volume_info[0] on an empty list raises UndefinedError during
+    # attribute access — before `| default(...)` ever runs — so the volume
+    # being GONE entirely (not just reattached elsewhere) can't be caught by
+    # a `default()` filter tacked onto the index. Guard the index itself,
+    # inline in the same expression, the same way create.yml's
+    # `existing_owner` guards `precheck_volume.hcloud_volume_info[0]` one
+    # task earlier — keeping the guard inline (not a separate `length > 0`
+    # check beforehand) means it can't drift away from the index it protects.
     - name: "Warn loudly if the volume did not survive the power cycle attached"
+      vars:
+        resume_owner: >-
+          {{
+            (resume_volume.hcloud_volume_info[0].server | default('', true))
+            if (resume_volume.hcloud_volume_info | default([]) | length > 0)
+            else ''
+          }}
       ansible.builtin.debug:
         msg: >-
-          WARNING: volume '{{ volume.name }}' is attached to
-          '{{ resume_volume.hcloud_volume_info[0].server | default("nothing", true) }}',
-          not '{{ box.name }}'. ~/data will be missing on the box. Hetzner
-          Volumes are expected to stay attached across power cycles, so this
-          means something unexpected happened — do not assume the data is
-          gone, but do not `mkfs` anything either. Run 'make create' to
-          reattach the existing volume (it will NOT be reformatted — see
-          the comment on the volume task in create.yml), then 'make
-          configure' to remount it.
-      when: resume_volume.hcloud_volume_info[0].server | default('') != box.name
+          {{
+            ("WARNING: volume '" + volume.name + "' no longer exists — it was
+            not just reattached elsewhere, it's gone. ~/data is unrecoverable
+            from Hetzner's side unless you have an external backup. Run
+            'make create' to provision a NEW empty volume (this is not a
+            restore), then 'make configure' to mount it.")
+            if (resume_volume.hcloud_volume_info | default([]) | length == 0)
+            else
+            ("WARNING: volume '" + volume.name + "' is attached to '" +
+            (resume_owner if resume_owner else "nothing") + "', not '" +
+            box.name + "'. ~/data will be missing on the box. Hetzner
+            Volumes are expected to stay attached across power cycles, so
+            this means something unexpected happened — do not assume the
+            data is gone, but do not `mkfs` anything either. A bare
+            'make create' will refuse to reattach it (create.yml's
+            existing_owner guard) while it's attached elsewhere. Reattaching
+            requires VOLUME_ALLOW_REATTACH=true and stopping the other
+            server first (`make pause` pointed at it) — see RUNBOOK.md,
+            Pause / resume.")
+          }}
+      when: resume_owner != box.name
 
     - name: "Next steps"
       ansible.builtin.debug:
