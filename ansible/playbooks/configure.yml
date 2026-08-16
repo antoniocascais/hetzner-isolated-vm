@@ -52,51 +52,16 @@
           not '{{ box.name }}' — run 'make create' to (re)attach it.
 
     - name: "Wait for SSH on BOX_SSH_PORT"
-      # ignore_errors only when the allow-ip play above (which now runs
-      # FIRST) found a transitional fallback port -- i.e. box.ssh_port isn't
-      # reachable YET because BOX_SSH_PORT was just changed and sshd hasn't
-      # been moved there by bootstrap below. In the normal case (no
-      # fallback known) this behaves exactly as before: a hard failure on
-      # its own 180s timeout, unchanged.
+      # Hard fail: this box's only inbound surface is the port this play will
+      # connect on. bootstrap moves sshd to BOX_SSH_PORT on first configure,
+      # and changing it later is a rebuild (see RUNBOOK), so there is no
+      # legitimate second port to wait on.
       ansible.builtin.wait_for:
         host: "{{ cfg_server.hcloud_server_info[0].ipv4_address }}"
         port: "{{ box.ssh_port }}"
         state: started
         delay: 5
         timeout: 180
-      register: cfg_wait_desired
-      ignore_errors: "{{ (hostvars['localhost'].ssh_transition_fallback_ports | default([]) | length) > 0 }}"
-
-    - name: "Fall back to a transitional SSH port (BOX_SSH_PORT changed but sshd hasn't moved there yet)"
-      ansible.builtin.wait_for:
-        host: "{{ cfg_server.hcloud_server_info[0].ipv4_address }}"
-        port: "{{ item }}"
-        state: started
-        delay: 0
-        timeout: 30
-      register: cfg_wait_fallback
-      loop: "{{ hostvars['localhost'].ssh_transition_fallback_ports | default([]) }}"
-      when: cfg_wait_desired is failed
-      ignore_errors: true
-
-    - name: "Fail loudly if neither BOX_SSH_PORT nor any fallback port is reachable"
-      ansible.builtin.assert:
-        that: >-
-          (cfg_wait_desired is succeeded) or
-          ((cfg_wait_fallback.results | default([]) | selectattr('failed', 'equalto', false) | list | length) > 0)
-        fail_msg: >-
-          Could not reach the box on BOX_SSH_PORT ({{ box.ssh_port }}) or any
-          transitional fallback port ({{ hostvars['localhost'].ssh_transition_fallback_ports | default([]) }}).
-          It may just be slow to boot after a reboot/resume -- retry. If you
-          changed BOX_SSH_PORT, confirm the box is actually up, then re-run
-          `make allow-ip` first so the firewall allows whatever port sshd is
-          really listening on right now.
-
-    - name: "Determine which port to actually connect on"
-      vars:
-        succeeded_fallback_ports: "{{ cfg_wait_fallback.results | default([]) | selectattr('failed', 'equalto', false) | map(attribute='item') | list }}"
-      ansible.builtin.set_fact:
-        cfg_connect_port: "{{ box.ssh_port if (cfg_wait_desired is succeeded) else (succeeded_fallback_ports | first) }}"
 
     - name: "Add server to inventory"
       ansible.builtin.add_host:
@@ -104,16 +69,16 @@
         groups: claude_box
         ansible_host: "{{ cfg_server.hcloud_server_info[0].ipv4_address }}"
         ansible_user: "{{ box.user }}"
-        ansible_port: "{{ cfg_connect_port }}"
+        ansible_port: "{{ box.ssh_port }}"
         ansible_ssh_private_key_file: "{{ lookup('env', 'BOX_SSH_KEY') | default('~/.ssh/hetzner-isolated-vm', true) }}"
         ansible_python_interpreter: /usr/bin/python3
         # No ansible_ssh_common_args here: the TOFU policy (accept-new) is set
-        # once, for every host and play, via ssh_args in ansible.cfg -- see the
-        # comment block there for the proven mechanics. Don't re-add a per-host
+        # once, for every host and play, via ssh_args in ansible.cfg — see
+        # docs/decisions.md for the proven mechanics. Don't re-add a per-host
         # override: ssh_args composes first and OpenSSH takes the first value
         # for a repeated `-o`, so a re-add with the SAME value is merely
         # redundant, but a DIFFERENT value would be silently ignored, not
-        # applied -- a trap, not just a second place to keep in sync.
+        # applied — a trap, not just a second place to keep in sync.
         volume_device: "{{ cfg_volume.hcloud_volume_info[0].linux_device }}"
 
 - name: Configure the box over SSH
@@ -127,23 +92,6 @@
       ansible.builtin.include_role:
         name: bootstrap
       tags: [bootstrap]
-
-    - name: "Reconnect on BOX_SSH_PORT if we got in via a transitional fallback port"
-      # Bootstrap (above) may have just moved sshd from the port we actually
-      # connected on (ansible_port, set by the fallback-connect logic in the
-      # previous play) to box.ssh_port. Ansible's own connection for the
-      # REST of this play still targets the OLD ansible_port unless told
-      # otherwise -- without this, every task from here on tries to reach a
-      # port sshd no longer listens on.
-      #
-      # This is include_tasks, not an inline block, because meta:
-      # reset_connection does not support `when` -- a block-level `when`
-      # around it is silently ignored (Ansible warns and runs it anyway),
-      # which would drop the connection on every run, including the normal
-      # steady-state case where the port never changed. include_tasks does
-      # honor `when` and simply never loads the file, so put the guard here.
-      ansible.builtin.include_tasks: tasks/reconnect-on-desired-port.yml
-      when: (ansible_port | string) != (box.ssh_port | string)
 
     - name: "Mount the data volume"
       ansible.builtin.include_role:

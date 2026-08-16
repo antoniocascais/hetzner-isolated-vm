@@ -64,6 +64,11 @@ a rogue dep can trash the box but not your Hetzner account.
 - **IP changed / locked out**: `make allow-ip` (re-detects your IP, updates the
   firewall via the Hetzner API — works even when you can't reach the box).
 - **Update Claude / packages**: `make configure` (idempotent).
+- **Changing `BOX_SSH_PORT` on an existing box is unsupported.** The port is baked
+  in at creation (cloud-init + the firewall rule) and moved by bootstrap on the first
+  `make configure`. Re-pointing an already-running box's port in place is not a
+  supported path — rebuild instead: `make destroy` + `make create` (with the new
+  `BOX_SSH_PORT` in `.env`), then `make configure`. `~/data` survives the rebuild.
 - **Reach a service Claude started**: it binds on the box, but the firewall only
   allows your configured SSH port (`BOX_SSH_PORT`). To reach another port, add a temporary rule for that port from
   your /32 (extend the firewall rule list), or tunnel over SSH:
@@ -110,10 +115,11 @@ it.
 5. Disable Rescue in the console, reboot back into the normal system, confirm SSH works
    on `BOX_SSH_PORT`, then **remove the temporary port-22 rule**.
 
-`make allow-ip` is safe to run at any point during this, including while the temporary
-port-22 rule is in place — it won't touch or remove that rule until the box actually
-answers on `BOX_SSH_PORT` again, and if you added the rule wide-open under pressure,
-`allow-ip` automatically narrows it to your detected /32 rather than leaving it exposed.
+`make allow-ip` overwrites the firewall's rules with exactly one SSH rule (your
+current IP on `BOX_SSH_PORT`), so it **will remove** any temporary rule you added
+— including the rescue port-22 rule. Don't run it until you're finished with
+rescue (or be ready to re-add the temporary rule). It is otherwise safe to run
+during a rescue; just know what it does to the rule set.
 
 **Not verified end to end.** Nothing here drives Rescue via code — the procedure above
 is manual console clicks, and `enable_rescue` appears nowhere in this repo's own
@@ -216,17 +222,6 @@ egress is locked down.
       work from several fixed networks.
 - [ ] Token scoping (dedicated project) is by convention, not enforced in code.
 - [ ] No automated snapshots. Add a snapshot step if you want fast rollback.
-- [ ] **The SSH port-transition path has never run against a real sshd restart.**
-      Changing `BOX_SSH_PORT` on an existing box triggers a sequence — `allow-ip`
-      keeps the old firewall rule open until the new port answers, `configure`
-      connects on whichever port works, bootstrap moves sshd, then Ansible
-      re-points its own connection mid-play and drops the multiplexed socket.
-      Every piece is verified in isolation, and the logic traces correctly end to
-      end. What has **not** happened is a real run where sshd actually restarts
-      underneath a live Ansible connection. That is the one thing that can't be
-      proven without infrastructure. **Do a throwaway-box dry run before changing
-      `BOX_SSH_PORT` on a box you care about**, and read the Rescue System section
-      above first — this is precisely the failure it exists for.
 - [ ] **`~/.claude/CLAUDE.md` on the box does not converge.** The `claude` role
       templates it with `force: false` (`ansible/roles/claude/tasks/main.yml`), and
       `configure.yml` includes that role on every run — so the first `make configure`

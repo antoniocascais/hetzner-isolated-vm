@@ -127,7 +127,7 @@
 
 # --- Reachability proof --------------------------------------------------
 # Port {{ box.ssh_port }} is the only NETWORK way into this box; whether a
-# Hetzner console fallback also works depends on whether BOX_CONSOLE_PASSWORD
+# Hetzner console recovery also works depends on whether BOX_CONSOLE_PASSWORD
 # was set before `make create` (see the rescue message below -- don't repeat
 # a fixed claim about it here either). Everything above is individually
 # defensible (mask ssh.socket, start ssh.service standalone, validate + install the new

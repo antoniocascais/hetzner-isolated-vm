@@ -13,13 +13,10 @@ This setup gives you:
   Firewall allows your configured SSH port (`BOX_SSH_PORT`, default **9427**)
   from your current public /32 and denies everything else. The server is
   created passing the firewall by name, so Hetzner attaches it at creation
-  — there is no window where the box sits unfiltered. One caveat to "no
-  other public surface": during an SSH port change, `make allow-ip` can
-  temporarily carry an extra transitional port rule alongside the main one
-  (still narrowed to your /32, never opened wide) until the new port is
-  confirmed reachable. Note the steady-state rule is enforced **off-box** at
-  the Hetzner API layer — there is no local nftables input chain, so the
-  whitelist survives anything that happens on the box itself.
+  — there is no window where the box sits unfiltered. Note the steady-state
+  rule is enforced **off-box** at the Hetzner API layer — there is no local
+  nftables input chain, so the whitelist survives anything that happens on the
+  box itself.
   The /32 is what actually protects you, not the port number: anyone already on
   the whitelisted address can port-scan you in seconds, and anyone else is dropped
   before they reach sshd. If you'd nonetheless rather this public repo not name
