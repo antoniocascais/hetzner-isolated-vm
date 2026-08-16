@@ -46,19 +46,11 @@ volume:
     purpose: hetzner-isolated-vm-data
   # DANGER: a fixed volume name + an env-driven box.name means a second box
   # (blue/green, a typo'd BOX_NAME, anything) can point at the SAME volume
-  # name while a DIFFERENT box is still running with it mounted. The hcloud
-  # volume module attaches unconditionally on a name mismatch, with no
-  # guard of its own. Hetzner's own Terraform provider explicitly detaches
-  # before attaching when a volume's server changes (internal/volume/
-  # resource.go), and its Go client defines ErrorCodeVolumeAlreadyAttached
-  # -- evidence (inferred from official-client source, not an empirically
-  # confirmed API contract) that a bare attach like this one most likely
-  # gets REJECTED rather than silently moving the volume. create.yml
-  # refuses to attempt it by default regardless: even a "most likely safe"
-  # outcome is worth converting into a clear message instead of an opaque
-  # API failure, and "most likely" isn't "certainly". This only bypasses
-  # that refusal, and only when you explicitly set it — never flip it as a
-  # matter of routine.
+  # name while a DIFFERENT box is still running with it mounted, and the
+  # hcloud volume module attaches unconditionally on a name mismatch.
+  # create.yml refuses that by default; this only bypasses the refusal, and
+  # only when you explicitly set it. Full rationale (incl. the Terraform-
+  # provider detach-before-attach proof): docs/decisions.md#volume-reattach.
   allow_reattach: "{{ (lookup('env', 'VOLUME_ALLOW_REATTACH') | default('false', true)) | lower in ['1', 'true', 'yes', 'on'] }}"
   # DANGER: a drifted/typo'd VOLUME_NAME makes create.yml provision a brand-
   # new, empty volume under that name instead of finding your real one — it

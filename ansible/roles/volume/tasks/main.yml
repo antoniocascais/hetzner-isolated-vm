@@ -16,7 +16,8 @@
 # ignore_errors to the mount task — either change would open a live path to
 # mkfs'ing an unformatted-but-attached volume, e.g. one that failed to
 # format during create.yml or that's attached before its data actually
-# arrives.
+# arrives. Why (the format-once module behavior):
+# docs/decisions.md#volume-format-and-order.
 #
 # The device path comes from configure.yml's localhost pre-play (a
 # hetzner.hcloud.volume_info lookup handed over via add_host as

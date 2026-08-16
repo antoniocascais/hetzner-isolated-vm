@@ -78,32 +78,12 @@
       register: precheck_volume
 
     - name: "Refuse to attach a volume that's currently on a different server"
-      # hetzner.hcloud.volume's _update_volume() (volume.py:238-246) calls
-      # attach() unconditionally on a name mismatch, with no prompt and no
-      # guard of its own -- confirmed by reading the module source. What
-      # Hetzner's API actually does with that bare attach is NOT verified
-      # against the server-side contract, but two pieces of official-client
-      # evidence point the same way: Hetzner's own Terraform provider
-      # explicitly Detaches before Attaching when a volume's server changes
-      # (internal/volume/resource.go), and its Go client defines
-      # ErrorCodeVolumeAlreadyAttached. Hetzner would not write a
-      # conditional detach into their own provider against their own API if
-      # a bare attach silently moved the volume -- so this most likely gets
-      # REJECTED outright rather than yanking a live filesystem out from
-      # under whatever's using it. "Most likely" isn't "certainly", and a
-      # running box with this volume mounted is not where you want to find
-      # out you were wrong -- so refuse by default regardless of which way
-      # it actually fails; converting even an unlikely bad outcome into a
-      # clear message instead of an opaque API error costs nothing.
-      # delete_protection does NOT help here regardless: it blocks
-      # `state: absent`, not attach(). Since volume.name is deliberately
-      # fixed (see the comment on `volume:` above) while box.name is
-      # env-driven, this WILL be hit on the first blue/green `make create`
-      # unless explicitly allowed.
-      #
-      # No-op in the normal cases: volume doesn't exist yet (nothing to
-      # attach away from anything), it's already attached to this box, or
-      # it's unattached (nothing running has it mounted either way).
+      # The hcloud volume module attaches unconditionally on a server-name
+      # mismatch (its _update_volume() calls attach() with no guard of its own),
+      # and `make create` must not yank a live filesystem off a running box.
+      # Rationale + source proof: docs/decisions.md#volume-reattach. No-op in
+      # the normal cases: volume doesn't exist yet, already attached to this
+      # box, or unattached.
       vars:
         existing_owner: >-
           {{
@@ -116,15 +96,9 @@
         fail_msg: >-
           Volume '{{ volume.name }}' is currently attached to server
           '{{ existing_owner }}', not '{{ box.name }}'. Continuing would try
-          to attach it here instead -- Hetzner's own Terraform provider
-          detaches before attaching when a volume's server changes, which
-          suggests (not confirmed against the server-side contract) that a
-          bare attach like this one most likely gets REJECTED outright
-          rather than moving the volume. But "most likely" isn't
-          "certainly", and if it's wrong while '{{ existing_owner }}' is
-          running with this volume mounted, that's a live filesystem pulled
-          out from under a live machine: I/O errors at best, data
-          corruption at worst.
+          to attach it here instead, which risks pulling a live filesystem
+          out from under a running machine (I/O errors at best, data
+          corruption at worst). Rationale: docs/decisions.md#volume-reattach.
 
           If this is a deliberate migration (e.g. a blue/green cutover):
           first make sure '{{ existing_owner }}' is stopped — from an
@@ -170,14 +144,11 @@
           actually has your data.
 
     - name: "Create + attach + format the persistent data volume"
-      # `format` is only honored by this module on first creation — see
-      # AnsibleHCloudVolume._create_volume() in the hcloud collection source
-      # (plugins/modules/volume.py). Once the volume exists, re-running this
-      # task takes the _update_volume() path instead, which never reads
-      # `format` at all. So this task structurally cannot reformat/wipe a
-      # volume that already exists, no matter how many times `make create`
-      # runs against it. delete_protection blocks `state: absent` too, as a
-      # second, independent guard (destroy.yml never targets this resource).
+      # `format` is only honored on first creation — the module's _create_volume()
+      # is the only path that reads it; once the volume exists, _update_volume()
+      # never touches `format`, so this structurally cannot reformat/wipe an
+      # existing volume. delete_protection blocks `state: absent` too, as a
+      # second, independent guard. Source proof: docs/decisions.md#volume-format-and-order.
       hetzner.hcloud.volume:
         api_token: "{{ hcloud_api_token }}"
         name: "{{ volume.name }}"

@@ -74,9 +74,9 @@
         ansible_python_interpreter: /usr/bin/python3
         # No ansible_ssh_common_args here: the TOFU policy (accept-new) is set
         # once, for every host and play, via ssh_args in ansible.cfg — see
-        # docs/decisions.md for the proven mechanics. Don't re-add a per-host
-        # override: ssh_args composes first and OpenSSH takes the first value
-        # for a repeated `-o`, so a re-add with the SAME value is merely
+        # docs/decisions.md#ssh-host-key for the proven mechanics. Don't re-add
+        # a per-host override: ssh_args composes first and OpenSSH takes the first
+        # value for a repeated `-o`, so a re-add with the SAME value is merely
         # redundant, but a DIFFERENT value would be silently ignored, not
         # applied — a trap, not just a second place to keep in sync.
         volume_device: "{{ cfg_volume.hcloud_volume_info[0].linux_device }}"
