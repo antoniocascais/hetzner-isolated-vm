@@ -81,4 +81,25 @@
       and its rules are up to date, but not attached to anything yet. Run
       'make create' to bring up the server (it attaches this firewall
       automatically), or re-run this after it exists.
-  when: fw_server.hcloud_server_info | default([]) | length == 0
+  # `firewall_create_path` (set only by create.yml, which runs this role
+  # BEFORE creating the server) means a server is about to be created that
+  # will attach this firewall — so this "run make create" note must NOT fire
+  # there. Default is false: any caller that doesn't set the flag is treated
+  # like allow-ip (server genuinely absent, pre-seed your IP), which is the
+  # fail-safe choice — it preserves the original guidance rather than
+  # silently dropping it.
+  when: >-
+    fw_server.hcloud_server_info | default([]) | length == 0
+    and not (firewall_create_path | default(false))
+
+- name: "Note: firewall rules are up to date; server attach happens next (create path)"
+  ansible.builtin.debug:
+    msg: >-
+      Server '{{ box.name }}' not found yet — expected at this point in
+      'make create': the firewall '{{ firewall.name }}' and its rules are up
+      to date but not attached to anything yet. The "Create server" task
+      immediately after this role attaches this firewall at creation, so
+      nothing here is run unattached.
+  when: >-
+    fw_server.hcloud_server_info | default([]) | length == 0
+    and (firewall_create_path | default(false))

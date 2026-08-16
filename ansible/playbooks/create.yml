@@ -51,6 +51,14 @@
     - name: "Apply firewall (guard + create/update rules; attach to the server happens at creation)"
       ansible.builtin.include_role:
         name: firewall
+      # This role runs BEFORE "Create server" below, so its server lookup
+      # comes up empty and its attach step skips. Tell the role we are on the
+      # create path so its "not attached to anything yet" note reads correctly
+      # mid-create (it must not tell the operator to run the `make create`
+      # they're already running). Default elsewhere is false = allow-ip
+      # pre-seed guidance, which is the fail-safe for any unset caller.
+      vars:
+        firewall_create_path: true
 
     - name: "Create server"
       # no_log: user_data renders cloud-init, which embeds
