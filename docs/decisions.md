@@ -14,7 +14,7 @@ install`), hetzner.hcloud **6.10.0** (vendored under
 
 ---
 
-## `<a id="ssh-host-key"></a>`ssh host-key + connection-option composition
+## SSH host key
 
 **Rule enforced in `ansible/ansible.cfg`:**
 `host_key_checking = True`, and the single canonical `ssh_args` set for every
@@ -60,7 +60,7 @@ policy changes.
 
 ---
 
-## `<a id="firewall-single-host-guard"></a>`every inbound rule must be single-host
+## Firewall single-host guard
 
 **Rule enforced in `ansible/roles/firewall/tasks/main.yml`:** every inbound
 rule (any `direction` other than an explicit `out`) must carry a non-empty
@@ -126,7 +126,7 @@ spliced out of the role and exercised against real Jinja templating:
 
 ---
 
-## `<a id="volume-reattach"></a>`refusing a volume reattach on the blue/green path
+## Volume reattach
 
 **Rule enforced in `ansible/playbooks/create.yml`:** refuse to attach a
 volume that is currently on a *different* server unless
@@ -158,7 +158,7 @@ only point here.
 
 ---
 
-## `<a id="detect-public-ip-validation"></a>`validating the detected public IP before it becomes a firewall rule
+## Detect public IP validation
 
 **Rule enforced in `ansible/playbooks/tasks/detect-public-ip.yml`:** the
 answer from ipify must be a well-formed IPv4 address with no leading/trailing
@@ -192,9 +192,9 @@ service answered.
 
 ---
 
-## `<a id="volume-format-and-order"></a>`format-once volume, and mount-before-filesystem ordering
+## Volume format and order
 
-**Rules enforced in code:** (1) `plugins` `format` on the volume is only
+**Rules enforced in code:** (1) the volume module's `format` param is only
 honored on first creation, so a re-run can never reformat/wipe an existing
 volume; (2) in `ansible/roles/volume/tasks/main.yml` the mount task runs
 FIRST and hard-fails on an unformatted device, so the mkfs-capable
