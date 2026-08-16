@@ -199,8 +199,19 @@ doing anything:
 
 Both are pinned. Edit the vars at the top of `ansible/roles/claude/tasks/main.yml`:
 Node needs a matching SHA256 from `https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt`;
-Claude Code needs only the version. Re-provisioning purges any older
-NodeSource-installed `nodejs` package so the box converges on the pinned tarball.
+Claude Code needs only the version (npm verifies the download against the
+registry's own integrity hash, so no separate checksum is tracked). Re-provisioning
+purges any older NodeSource-installed `nodejs` package so the box converges on the
+pinned tarball. ~2 min total:
+
+```sh
+# Node: pick a release at https://nodejs.org/dist/, grab its linux-x64 sha256
+curl -fsSL https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt | grep 'linux-x64\.tar\.gz'
+# -> update node_version + node_linux_x64_sha256
+
+# Claude Code: pick a version, update claude_code_version
+# https://www.npmjs.com/package/@anthropic-ai/claude-code?activeTab=versions
+```
 
 **The two bumps are not independent.** npm's global prefix lives under the
 version-specific Node install root, so bumping Node deletes the installed Claude

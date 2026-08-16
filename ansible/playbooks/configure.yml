@@ -1,12 +1,7 @@
 ---
-# Phase 2: re-assert the firewall rule from your CURRENT IP (handles IP
-# drift), THEN resolve the server's public IP and configure it over SSH.
-#
-# allow-ip runs FIRST, not last: if your IP has drifted since the last
-# create/configure, the firewall still only allows the OLD IP. Doing the
-# self-heal first means the "Wait for SSH" task below has a real chance of
-# succeeding instead of hanging for its full 180s timeout and aborting on a
-# box you could otherwise already reach.
+# Phase 2: re-assert the firewall rule from your CURRENT IP, THEN configure
+# the box over SSH. allow-ip runs FIRST so an IP drift self-heals before
+# "Wait for SSH" would hang its full 180s against a firewall allowing the old IP.
 - ansible.builtin.import_playbook: allow-ip.yml
 
 - name: Resolve server and build inventory
@@ -52,10 +47,8 @@
           not '{{ box.name }}' — run 'make create' to (re)attach it.
 
     - name: "Wait for SSH on BOX_SSH_PORT"
-      # Hard fail: this box's only inbound surface is the port this play will
-      # connect on. bootstrap moves sshd to BOX_SSH_PORT on first configure,
-      # and changing it later is a rebuild (see RUNBOOK), so there is no
-      # legitimate second port to wait on.
+      # Hard fail: changing the port later is a rebuild (see RUNBOOK), so
+      # there is no legitimate second port to wait on.
       ansible.builtin.wait_for:
         host: "{{ cfg_server.hcloud_server_info[0].ipv4_address }}"
         port: "{{ box.ssh_port }}"
@@ -72,13 +65,10 @@
         ansible_port: "{{ box.ssh_port }}"
         ansible_ssh_private_key_file: "{{ lookup('env', 'BOX_SSH_KEY') | default('~/.ssh/hetzner-isolated-vm', true) }}"
         ansible_python_interpreter: /usr/bin/python3
-        # No ansible_ssh_common_args here: the TOFU policy (accept-new) is set
-        # once, for every host and play, via ssh_args in ansible.cfg — see
-        # docs/decisions.md#ssh-host-key for the proven mechanics. Don't re-add
-        # a per-host override: ssh_args composes first and OpenSSH takes the first
-        # value for a repeated `-o`, so a re-add with the SAME value is merely
-        # redundant, but a DIFFERENT value would be silently ignored, not
-        # applied — a trap, not just a second place to keep in sync.
+        # No ansible_ssh_common_args here — the TOFU policy lives once in
+        # ansible.cfg's ssh_args. Do NOT re-add a per-host override: a
+        # DIFFERENT value would be silently ignored, not applied.
+        # Proof: docs/decisions.md#ssh-host-key.
         volume_device: "{{ cfg_volume.hcloud_volume_info[0].linux_device }}"
 
 - name: Configure the box over SSH

@@ -19,11 +19,8 @@ PY
 
 key="${BOX_SSH_KEY:-$HOME/.ssh/hetzner-isolated-vm}"
 key="${key/#\~/$HOME}"
-# accept-new here is a deliberate copy of the same TOFU policy set in
-# ansible/ansible.cfg's ssh_args and ansible/roles/bootstrap/tasks/main.yml's
-# post-restart probe -- this is a raw `ssh` invocation, not an Ansible
-# connection, so it doesn't read ansible.cfg and needs its own copy. Keep it
-# in sync with those two if the policy ever changes.
+# Deliberate copy of the TOFU policy (raw ssh doesn't read ansible.cfg).
+# Keep in sync with ansible.cfg + bootstrap's probe: docs/decisions.md#ssh-host-key.
 exec ssh -i "${key}" -p "${BOX_SSH_PORT:-9427}" \
   -o StrictHostKeyChecking=accept-new \
   "${BOX_USER:-claude}@${ip}" "$@"

@@ -1,16 +1,9 @@
 ---
-# Power the server back on. Idempotent: starting an already-running server
-# is a no-op — see start_server() in the hcloud collection's server.py,
-# which checks `status != STATUS_RUNNING` before acting.
-#
-# Volume attachment: Hetzner Cloud Volumes are attached/detached by an
-# explicit API call, independent of server power state — power_off/power_on
-# (what `state: stopped`/`started` drive) never call attach/detach. So a
-# paused-then-resumed server is expected to keep its volume attached. This
-# is documented Hetzner behavior, not something asserted by the module
-# source itself (server.py has no volume-handling code in the power-cycle
-# path at all) — re-checked below rather than just assumed, and this repo
-# has not run it against a real box to confirm.
+# Power the server back on. Idempotent (the module checks status first).
+# Hetzner Volumes attach/detach only via explicit API calls — power cycles
+# don't touch them — so the volume is EXPECTED to stay attached. Documented
+# behavior, not proven in the module source, and not yet run against a real
+# box: hence still re-checked below rather than assumed.
 - name: Resume (power on) the server
   hosts: localhost
   connection: local
@@ -47,14 +40,9 @@
         name: "{{ volume.name }}"
       register: resume_volume
 
-    # hcloud_volume_info[0] on an empty list raises UndefinedError during
-    # attribute access — before `| default(...)` ever runs — so the volume
-    # being GONE entirely (not just reattached elsewhere) can't be caught by
-    # a `default()` filter tacked onto the index. Guard the index itself,
-    # inline in the same expression, the same way create.yml's
-    # `existing_owner` guards `precheck_volume.hcloud_volume_info[0]` one
-    # task earlier — keeping the guard inline (not a separate `length > 0`
-    # check beforehand) means it can't drift away from the index it protects.
+    # Guard the [0] index inline: on an empty list it raises UndefinedError
+    # BEFORE `| default()` runs, so a tacked-on default can't catch a gone
+    # volume. Same pattern as create.yml's existing_owner.
     - name: "Warn loudly if the volume did not survive the power cycle attached"
       vars:
         resume_owner: >-

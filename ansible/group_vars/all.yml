@@ -14,15 +14,10 @@ box:
     managed_by: ansible
     purpose: hetzner-isolated-vm
 
-# Firewall: one firewall object PER box, named off box.name (not a constant) —
-# two boxes provisioned from this repo must never collide on a shared
-# firewall, since destroy.yml deletes the firewall unconditionally and that
-# would rip protection off whichever other box happened to share the name.
-#
-# Deliberately `box.name` verbatim, with no suffix: the already-deployed box
-# has a firewall named after it, so this derivation is a no-op there. Any
-# suffix would instead orphan that live firewall and silently build a second
-# one beside it on the next create/allow-ip run.
+# One firewall PER box, named `box.name` verbatim: destroy.yml deletes the
+# firewall unconditionally, so a shared name would strip protection off
+# another box — and any suffix would orphan the live box's existing firewall
+# and silently build a second one beside it.
 firewall:
   name: "{{ box.name }}"
   state: present
@@ -44,28 +39,18 @@ volume:
   labels:
     managed_by: ansible
     purpose: hetzner-isolated-vm-data
-  # DANGER: a fixed volume name + an env-driven box.name means a second box
-  # (blue/green, a typo'd BOX_NAME, anything) can point at the SAME volume
-  # name while a DIFFERENT box is still running with it mounted, and the
-  # hcloud volume module attaches unconditionally on a name mismatch.
-  # create.yml refuses that by default; this only bypasses the refusal, and
-  # only when you explicitly set it. Full rationale (incl. the Terraform-
-  # provider detach-before-attach proof): docs/decisions.md#volume-reattach.
+  # DANGER: bypasses create.yml's refusal to attach a volume that's mounted
+  # on a DIFFERENT running box. Rationale + proof: docs/decisions.md#volume-reattach.
   allow_reattach: "{{ (lookup('env', 'VOLUME_ALLOW_REATTACH') | default('false', true)) | lower in ['1', 'true', 'yes', 'on'] }}"
-  # DANGER: a drifted/typo'd VOLUME_NAME makes create.yml provision a brand-
-  # new, empty volume under that name instead of finding your real one — it
-  # reports green while your actual data sits orphaned (and billing) under
-  # the old name. create.yml refuses this by default when any other volume
-  # already carries this tool's management labels; this only bypasses that
-  # refusal for a genuine second/blue-green deployment.
+  # DANGER: bypasses create.yml's refusal to provision a brand-new, empty
+  # volume while another volume already carries this tool's management labels
+  # (the drifted-VOLUME_NAME case: real data orphans and bills under the old name).
   allow_new: "{{ (lookup('env', 'VOLUME_ALLOW_NEW') | default('false', true)) | lower in ['1', 'true', 'yes', 'on'] }}"
 
 # Claude runtime
 claude:
-  # Must live under the volume, not the box's root disk — otherwise the
-  # volume protects nothing and `make destroy` still wipes all real work.
-  # Role order in configure.yml (bootstrap, volume, claude) already mounts
-  # the volume before this dir gets created, so no ordering change needed.
+  # Must live under the volume, not the root disk — otherwise `make destroy`
+  # still wipes all real work. configure.yml's role order mounts the volume first.
   workspace: "{{ volume.mount_path }}/workspace"
   extra_packages:
     - git

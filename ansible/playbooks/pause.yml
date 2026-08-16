@@ -1,18 +1,11 @@
 ---
 # Power off the server to stop compute billing, without touching the
-# firewall or the data volume. Idempotent: powering off an already-stopped
-# server is a no-op — see stop_server() in the hcloud collection's
-# server.py, which checks `status != STATUS_OFF` before acting.
+# firewall or the data volume. Idempotent (the module checks status first).
 #
-# SAFETY: this playbook can never delete the server.
-#   - No task here uses `state: absent`.
-#   - The one `hetzner.hcloud.server` task below passes only `name` and
-#     `state: stopped` — no server_type/image/location. `present_server()`
-#     only takes the create path when the named server does not exist, and
-#     we've already asserted it exists just above. Even if that could
-#     somehow race, `_create_server()` hard-fails via
-#     `fail_on_missing_params(["name", "server_type", "image"])` rather than
-#     silently creating a server, because we deliberately don't supply them.
+# SAFETY: this playbook can never delete OR create a server — no task uses
+# `state: absent`, and the server task deliberately passes only name +
+# `state: stopped`: the module's create path hard-fails on the missing
+# server_type/image params rather than silently creating anything.
 - name: Pause (power off) the server
   hosts: localhost
   connection: local

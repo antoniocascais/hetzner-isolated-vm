@@ -10,12 +10,10 @@
     fail_msg: "Hetzner API token missing. Set HCLOUD_TOKEN in .env."
 
 - name: "Guard against world-open inbound rules"
-  # Every inbound rule must name at least one single-host source (/32 or /128);
-  # only an explicit `direction: out` is exempt. port_covers_ssh no longer gates
-  # the guard — it only sharpens the failure message when a rule happens to cover
-  # BOX_SSH_PORT. Full proof of the fail-closed choices (\Z anchors, trimmed
-  # port_str, empty-source hard fail, unrecognized direction treated as inbound,
-  # no-leading-zero IPv4 octets): docs/decisions.md#firewall-single-host-guard.
+  # Every inbound rule must name only single-host sources (/32 or /128); only
+  # an explicit `direction: out` is exempt. port_covers_ssh just sharpens the
+  # failure message. Proof of the fail-closed choices:
+  # docs/decisions.md#firewall-single-host-guard.
   ansible.builtin.assert:
     that:
       - not (is_inbound and (source_ips_list | length == 0))
@@ -58,14 +56,9 @@
     name: "{{ box.name }}"
   register: fw_server
 
-# No hard fail when the server is missing: this role is reached via
-# `make allow-ip` (allow-ip.yml), which is explicitly meant to work before
-# the box exists yet -- e.g. pre-seeding your IP right before `make create`.
-# The firewall OBJECT and its rules are created/updated above unconditionally
-# either way; only the ATTACH step (which needs a real server ID) is
-# conditional. Server creation passes the firewall by name (`firewalls:` in
-# create.yml), so the attach below only ever fires on the allow-ip path when
-# the server already exists.
+# No hard fail when the server is missing: allow-ip must work before the box
+# exists (pre-seeding your IP). Only the ATTACH step is conditional; create.yml
+# attaches by name at creation, so this only fires on the allow-ip path.
 - name: "Attach firewall to server (skipped if the server doesn't exist yet)"
   hetzner.hcloud.firewall_resource:
     api_token: "{{ hcloud_api_token }}"
@@ -81,13 +74,8 @@
       and its rules are up to date, but not attached to anything yet. Run
       'make create' to bring up the server (it attaches this firewall
       automatically), or re-run this after it exists.
-  # `firewall_create_path` (set only by create.yml, which runs this role
-  # BEFORE creating the server) means a server is about to be created that
-  # will attach this firewall — so this "run make create" note must NOT fire
-  # there. Default is false: any caller that doesn't set the flag is treated
-  # like allow-ip (server genuinely absent, pre-seed your IP), which is the
-  # fail-safe choice — it preserves the original guidance rather than
-  # silently dropping it.
+  # firewall_create_path (set only by create.yml) suppresses this "run make
+  # create" note mid-create. Default false = allow-ip guidance, the fail-safe.
   when: >-
     fw_server.hcloud_server_info | default([]) | length == 0
     and not (firewall_create_path | default(false))

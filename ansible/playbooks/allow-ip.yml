@@ -19,14 +19,9 @@
       register: aip_server
 
     - name: "Record whether the target server exists"
-      # Must be a set_fact, not a task-level `vars:` entry: task-level vars
-      # live only for their one task, and this value is read by `when:` on
-      # the two "Result" debug tasks at the bottom of this play. As a
-      # task-local var it was undefined by then (proven against ansible-core
-      # 2.21.1: `'server_exists' is undefined`) — failing AFTER the firewall
-      # had already been written, and aborting configure.yml (which imports
-      # this playbook) before it reached the bootstrap role. set_fact
-      # persists for the rest of the play.
+      # set_fact, not task-level vars: this is read by `when:` on the Result
+      # tasks below, and a task-local var is undefined by then (proven on
+      # ansible-core 2.21.1 — it aborted configure.yml mid-import).
       ansible.builtin.set_fact:
         server_exists: "{{ (aip_server.hcloud_server_info | default([]) | length) > 0 }}"
 
@@ -48,13 +43,9 @@
         msg: "Firewall now allows SSH (port {{ box.ssh_port }}) from {{ detected_public_ip }}/32."
       when: server_exists
 
-    # This is the tool you reach for when you CAN'T get in, so the last line it
-    # prints has to be honest about whether anything is actually protecting a
-    # box. The firewall role attaches conditionally (it must, so you can
-    # pre-seed your IP before `make create`), which means a BOX_NAME typo now
-    # writes rules against a firewall attached to nothing instead of hard-
-    # failing the way it used to. Exiting 0 is right; ending on an unqualified
-    # "now allows SSH" while you're still locked out is not.
+    # This is the tool you reach for when you CAN'T get in, so its last line
+    # must be honest: a BOX_NAME typo writes rules against a firewall attached
+    # to nothing. Exiting 0 is right; an unqualified "now allows SSH" is not.
     - name: "Result (rules written, but not attached to anything)"
       ansible.builtin.debug:
         msg: >-

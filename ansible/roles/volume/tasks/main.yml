@@ -1,31 +1,15 @@
 ---
-# Mounts the persistent Hetzner Volume at {{ volume.mount_path }}.
+# Mounts the persistent Hetzner Volume (created/attached/formatted by
+# create.yml). Idempotent against an already-mounted volume.
 #
-# The volume is created, attached, AND formatted (ext4) by create.yml via
-# the Hetzner API — see the comment on that task for why it can't reformat
-# an existing volume. Re-running this role against an already-mounted
-# volume is a clean no-op (ansible.posix.mount is idempotent on
-# `state: mounted`).
+# INVARIANT: "Mount" runs BEFORE the mkfs-capable filesystem task and must
+# never get ignore_errors — that ordering is the only thing preventing an
+# mkfs of an unformatted-but-attached volume.
+# Proof: docs/decisions.md#volume-format-and-order.
 #
-# community.general.filesystem (below) IS mkfs-capable: given a device with
-# no existing filesystem, its default `state: present` creates one rather
-# than failing. What actually protects the data here is task ORDERING, not
-# the module: "Mount the data volume" runs FIRST and hard-fails on an
-# unformatted device (nothing to mount), so the filesystem task is never
-# reached in that case. Do NOT reorder these two tasks, and do NOT add
-# ignore_errors to the mount task — either change would open a live path to
-# mkfs'ing an unformatted-but-attached volume, e.g. one that failed to
-# format during create.yml or that's attached before its data actually
-# arrives. Why (the format-once module behavior):
-# docs/decisions.md#volume-format-and-order.
-#
-# The device path comes from configure.yml's localhost pre-play (a
-# hetzner.hcloud.volume_info lookup handed over via add_host as
-# `volume_device`), never a hardcoded /dev/sdX — device letters are not
-# stable across attach order/reboots on Hetzner. `volume_device` is read
-# unqualified (not via hostvars['claude_box']): this role only ever runs
-# in the `claude_box` play, so the bare name already resolves to the
-# current host's own hostvars, and doesn't hardcode the inventory name.
+# volume_device comes from configure.yml's API lookup via add_host (device
+# letters aren't stable on Hetzner); read unqualified since this role only
+# runs in the claude_box play.
 
 - name: "Ensure data mount point exists"
   ansible.builtin.file:
@@ -44,12 +28,9 @@
     state: mounted
 
 - name: "Grow the filesystem to match the block device (safe no-op if unchanged)"
-  # VOLUME_SIZE growing the Hetzner block device doesn't grow the ext4
-  # filesystem inside it — that's a separate step. resizefs only touches
-  # the device when its size actually differs from the filesystem's, so
-  # this is idempotent and harmless when nothing changed. Shrinking is not
-  # possible this way (Hetzner volumes can't shrink either), so there's no
-  # data-loss direction to guard against here, unlike the volume module.
+  # A VOLUME_SIZE bump grows the block device but not the ext4 inside it.
+  # resizefs only acts on a size mismatch, and shrinking is impossible
+  # (Hetzner volumes can't shrink either) — no data-loss direction to guard.
   community.general.filesystem:
     fstype: ext4
     dev: "{{ volume_device }}"

@@ -58,6 +58,20 @@ binary directly (not through Ansible's connection plugin), so neither reads
 ssh_args/ansible_ssh_common_args at all. Keep those copies in sync if this
 policy changes.
 
+**Why the bootstrap reachability probe is a raw `ssh` invocation at all.**
+The obvious tool — `meta: reset_connection` followed by any Ansible task —
+does not prove a fresh handshake under this repo's own `ssh_args`:
+`ControlPersist=60s` keeps a control socket alive, `reset_connection` only
+*warns* (does not fail) if `ssh -O stop` can't reach that socket, and if the
+socket survived, the next task can silently multiplex back onto it — passing
+without ever opening a new TCP + auth handshake against the reconfigured
+sshd. So the probe bypasses the connection plugin entirely: a raw `ssh`
+run with `ControlMaster=no -o ControlPath=none`, which structurally cannot
+multiplex onto anything. Host/port/user/key come from the same play
+variables (`ansible_host`/`ansible_user`/`ansible_ssh_private_key_file`/
+`box.ssh_port`), not hardcoded, so a `BOX_SSH_PORT` change cannot desync
+the check from the play.
+
 ---
 
 ## Firewall single-host guard
@@ -65,7 +79,7 @@ policy changes.
 **Rule enforced in `ansible/roles/firewall/tasks/main.yml`:** every inbound
 rule (any `direction` other than an explicit `out`) must carry a non-empty
 `source_ips` where every entry is exactly one host (/32 IPv4 or /128 IPv6).
-`port_covers_ssh` no longer gates whether the guard runs; it only sharpens
+`port_covers_ssh` does not gate whether the guard runs; it only sharpens
 the failure message when the rule also covers `BOX_SSH_PORT`.
 
 **Proof (verified against ansible-core 2.21.1).** The exact `vars:` block was

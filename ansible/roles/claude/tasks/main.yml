@@ -1,40 +1,15 @@
 ---
-# Installs Node.js + Claude Code on the sandbox box.
+# Installs Node.js + Claude Code, pinned (never "latest") so a rebuilt box
+# reproduces the exact toolchain findings were verified against. Node comes
+# from the official upstream tarball, checksum-verified against nodejs.org's
+# SHASUMS256.txt -- no NodeSource repo, no unverified curl-pipe-bash.
 #
-# Node and claude-code are pinned to the exact versions the live/reference
-# box runs (never "latest"), so a rebuilt box reproduces the same toolchain
-# every finding was verified against. Node comes from the official upstream
-# tarball, checksum-verified against nodejs.org's own SHASUMS256.txt -- no
-# NodeSource repo, no unverified curl-pipe-bash.
+# Needs outbound HTTPS to nodejs.org + registry.npmjs.org on first install
+# of a pinned version; both downloads fail fast with a clear message if a
+# default-deny egress firewall blocks them (see the rescue blocks).
 #
-# Egress requirements: this role needs outbound HTTPS to nodejs.org (Node
-# tarball) and registry.npmjs.org (claude-code package) the first time it
-# installs a given pinned version, plus whatever apt already needs for
-# base_packages. Both downloads are wrapped to fail fast with a clear
-# message (rather than hang/retry for minutes) if a default-deny egress
-# firewall blocks them -- see the rescue blocks below.
-#
-# Bumping these versions (~2 min):
-#   1. Node: pick the release dir at https://nodejs.org/dist/vX.Y.Z/, then
-#      pull the sha256 for node-vX.Y.Z-linux-x64.tar.gz out of that
-#      release's own SHASUMS256.txt, e.g.:
-#        curl -fsSL https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt \
-#          | grep 'linux-x64\.tar\.gz'
-#      Update node_version and node_linux_x64_sha256 below to match.
-#   2. claude-code: pick a version from
-#      https://www.npmjs.com/package/@anthropic-ai/claude-code?activeTab=versions
-#      and update claude_code_version. npm verifies what it downloads
-#      against the registry's own integrity hash, so no separate checksum
-#      is tracked here for this one.
-#
-# The two bumps are NOT independent: npm's global-package prefix for this
-# tarball install is derived from where the npm binary lives, so claude-code
-# is installed under node_home (which is node_version-specific). Bumping
-# node_version alone still forces a claude-code reinstall from the npm
-# registry on the next run (the old node_home, and the claude-code copy
-# under it, gets pruned; "Install Claude Code" below reinstalls against the
-# new prefix) -- so registry.npmjs.org must be reachable for a Node-only
-# bump too, not just a claude-code bump.
+# Bump procedure + why the two pins are coupled (a Node-only bump still
+# needs the npm registry): RUNBOOK.md "Bumping Node / Claude Code".
 - name: "Install pinned, checksum-verified Node.js + Claude Code"
   vars:
     node_version: "22.23.1"
@@ -44,15 +19,9 @@
     node_home: "{{ node_install_root }}/node-v{{ node_version }}-linux-x64"
     claude_code_version: "2.1.207"
   block:
-    # This nodejs PACKAGE purge needs no network (dpkg-local), so it's safe
-    # to run first in this role regardless of egress state. The apt repo
-    # definition + keyring that installed this package are a separate
-    # concern -- pure apt hygiene, not Node-specific -- and live in the
-    # bootstrap role instead, ahead of ITS "Update apt cache" task, since
-    # that's the first apt operation in the whole play and removal has to
-    # precede it (not just this role's own apt calls) to actually keep
-    # deb.nodesource.com off every subsequent apt run. See
-    # roles/bootstrap/tasks/main.yml.
+    # dpkg-local (no network), safe regardless of egress state. The NodeSource
+    # repo definition + keyring cleanup lives in the bootstrap role instead --
+    # it must precede the play's FIRST apt operation, not just this role's.
     - name: "Remove NodeSource-installed Node.js (superseded by pinned tarball install)"
       ansible.builtin.apt:
         name: nodejs
@@ -65,16 +34,10 @@
         state: present
         update_cache: true
 
-    # Gate on whether OUR pinned build is actually on disk at node_home,
-    # not on what `node --version` reports. The version string alone is
-    # fragile: some other install (distro package, nvm, a stale symlink)
-    # could coincidentally report the same version without node_home
-    # existing, which would leave the unconditional symlink task below
-    # creating a DANGLING /usr/local/bin/node against a directory that was
-    # never extracted -- converting a working box into a broken one.
-    # node_home's path already embeds node_version, so a version bump
-    # naturally makes this stat miss and re-triggers extraction; no
-    # separate upgrade-path logic needed.
+    # Gate on OUR pinned build existing at node_home, not on `node --version`:
+    # some other install could report the same version without node_home
+    # existing, and the symlink task below would then dangle /usr/local/bin/node.
+    # node_home embeds node_version, so a bump naturally re-triggers extraction.
     - name: "Check whether the pinned Node.js build is already extracted"
       ansible.builtin.stat:
         path: "{{ node_home }}/bin/node"

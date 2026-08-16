@@ -27,12 +27,9 @@ $(VENV)/.installed: requirements.txt ansible/collections/requirements.yml
 	python3 -m venv $(VENV)
 	$(PY) -m pip install --quiet --upgrade pip
 	$(PY) -m pip install --quiet -r requirements.txt
-	# -p + --force: galaxy treats the requirement as satisfied if ANY
-	# configured path (e.g. the shared ~/.ansible/collections cache) already
-	# has a matching version, and silently skips installing into ours. -p
-	# pins the target dir; --force makes it actually copy there regardless
-	# of what's already installed elsewhere, so this repo is reproducible
-	# even on a machine with a pre-populated global cache.
+	# -p + --force: without them galaxy treats a matching version in ANY
+	# configured path (e.g. the global ~/.ansible cache) as satisfying the
+	# requirement and silently skips installing into the repo's own copy.
 	ANSIBLE_CONFIG=ansible/ansible.cfg $(VENV)/bin/ansible-galaxy collection install -r ansible/collections/requirements.yml -p ansible/collections --force
 	@touch $@
 

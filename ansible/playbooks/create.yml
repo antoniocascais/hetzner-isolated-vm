@@ -41,31 +41,20 @@
             source_ips: ["{{ whitelist_cidr }}"]
             description: "SSH (whitelisted IP)"
 
-    # Firewall FIRST, server second: the role creates/updates the firewall
-    # object and its rules now (its attach step skips — no server exists yet),
-    # then "Create server" below passes `firewalls:` so Hetzner attaches it
-    # atomically at creation. There is no moment where the box sits on the open
-    # internet unfiltered. The role (not an inline hetzner.hcloud.firewall
-    # task) still runs the "every inbound rule is single-host" guard, so a
-    # malformed whitelist_cidr is rejected before any server exists.
+    # Firewall FIRST (rules + single-host guard; attach skips, no server yet),
+    # then "Create server" passes `firewalls:` so Hetzner attaches it atomically
+    # at creation — no moment where the box sits on the open internet unfiltered.
     - name: "Apply firewall (guard + create/update rules; attach to the server happens at creation)"
       ansible.builtin.include_role:
         name: firewall
-      # This role runs BEFORE "Create server" below, so its server lookup
-      # comes up empty and its attach step skips. Tell the role we are on the
-      # create path so its "not attached to anything yet" note reads correctly
-      # mid-create (it must not tell the operator to run the `make create`
-      # they're already running). Default elsewhere is false = allow-ip
-      # pre-seed guidance, which is the fail-safe for any unset caller.
       vars:
+        # Makes the role's "not attached yet" note create-path-aware (it must
+        # not tell the operator to run the `make create` they're already running).
         firewall_create_path: true
 
     - name: "Create server"
-      # no_log: user_data renders cloud-init, which embeds
-      # console_password_hash (a SHA-512 crypt hash). Without this it can
-      # leak into failure output or -v logs. The task's own args/result are
-      # suppressed; `created` (registered below) is still usable normally by
-      # later tasks — no_log only stops THIS task from printing it.
+      # no_log: user_data renders cloud-init, which embeds console_password_hash
+      # — keep it out of failure output and -v logs. `created` is still usable.
       hetzner.hcloud.server:
         api_token: "{{ hcloud_api_token }}"
         name: "{{ box.name }}"
@@ -87,11 +76,8 @@
 
     - name: "Refuse to attach a volume that's currently on a different server"
       # The hcloud volume module attaches unconditionally on a server-name
-      # mismatch (its _update_volume() calls attach() with no guard of its own),
-      # and `make create` must not yank a live filesystem off a running box.
-      # Rationale + source proof: docs/decisions.md#volume-reattach. No-op in
-      # the normal cases: volume doesn't exist yet, already attached to this
-      # box, or unattached.
+      # mismatch; `make create` must not yank a live filesystem off a running
+      # box. Proof: docs/decisions.md#volume-reattach. No-op in normal cases.
       vars:
         existing_owner: >-
           {{
@@ -123,14 +109,10 @@
       register: all_managed_volumes
 
     - name: "Refuse to silently provision a second, orphaned data volume"
-      # If volume.name doesn't exist yet, the task below CREATES it fresh —
-      # empty. That's exactly right the first time ever run, but if
-      # VOLUME_NAME has drifted (typo, or "helpfully" changed to match a
-      # renamed box) it silently starts a second, empty volume while your
-      # real data sits under the old name, now unreferenced by this run and
-      # billing forever. Catch it by checking whether any OTHER volume
-      # already carries this tool's management labels — a fresh install has
-      # none, so this is a no-op there.
+      # A drifted/typo'd VOLUME_NAME would make the task below create a fresh
+      # EMPTY volume while the real data orphans (and bills) under the old
+      # name. Detect it via this tool's management labels on any OTHER volume;
+      # a fresh install has none, so first-ever runs pass untouched.
       vars:
         target_exists: "{{ (precheck_volume.hcloud_volume_info | default([]) | length) > 0 }}"
         other_named_volumes: "{{ all_managed_volumes.hcloud_volume_info | default([]) | rejectattr('name', 'equalto', volume.name) | list }}"
@@ -152,11 +134,9 @@
           actually has your data.
 
     - name: "Create + attach + format the persistent data volume"
-      # `format` is only honored on first creation — the module's _create_volume()
-      # is the only path that reads it; once the volume exists, _update_volume()
-      # never touches `format`, so this structurally cannot reformat/wipe an
-      # existing volume. delete_protection blocks `state: absent` too, as a
-      # second, independent guard. Source proof: docs/decisions.md#volume-format-and-order.
+      # `format` is only honored on first creation, so this structurally cannot
+      # reformat/wipe an existing volume; delete_protection independently blocks
+      # `state: absent`. Proof: docs/decisions.md#volume-format-and-order.
       hetzner.hcloud.volume:
         api_token: "{{ hcloud_api_token }}"
         name: "{{ volume.name }}"
