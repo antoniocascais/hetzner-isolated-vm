@@ -9,19 +9,29 @@
   vars_files:
     - "{{ playbook_dir }}/../group_vars/all.yml"
   tasks:
-    - name: "Detect current public IP"
-      ansible.builtin.uri:
-        url: https://api.ipify.org?format=json
-        return_content: true
-      register: myip
+    - name: "Detect + validate current public IP"
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/detect-public-ip.yml"
 
-    - name: "Set firewall rule"
+    - name: "Look up target server (best-effort — this playbook must still work before the server exists)"
+      hetzner.hcloud.server_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+      register: aip_server
+
+    - name: "Record whether the target server exists"
+      # set_fact, not task-level vars: this is read by `when:` on the Result
+      # tasks below, and a task-local var is undefined by then (proven on
+      # ansible-core 2.21.1 — it aborted configure.yml mid-import).
+      ansible.builtin.set_fact:
+        server_exists: "{{ (aip_server.hcloud_server_info | default([]) | length) > 0 }}"
+
+    - name: "Build firewall rule (your current IP only)"
       ansible.builtin.set_fact:
         firewall_rules:
           - direction: in
             protocol: tcp
             port: "{{ box.ssh_port | string }}"
-            source_ips: ["{{ myip.json.ip }}/32"]
+            source_ips: ["{{ detected_public_ip }}/32"]
             description: "SSH (whitelisted IP)"
 
     - name: "Apply firewall"
@@ -30,4 +40,18 @@
 
     - name: "Result"
       ansible.builtin.debug:
-        msg: "Firewall now allows SSH (port {{ box.ssh_port }}) from {{ myip.json.ip }}/32 only."
+        msg: "Firewall now allows SSH (port {{ box.ssh_port }}) from {{ detected_public_ip }}/32."
+      when: server_exists
+
+    # This is the tool you reach for when you CAN'T get in, so its last line
+    # must be honest: a BOX_NAME typo writes rules against a firewall attached
+    # to nothing. Exiting 0 is right; an unqualified "now allows SSH" is not.
+    - name: "Result (rules written, but not attached to anything)"
+      ansible.builtin.debug:
+        msg: >-
+          Firewall '{{ firewall.name }}' now carries an SSH rule (port
+          {{ box.ssh_port }}) for {{ detected_public_ip }}/32 — but no server named
+          '{{ box.name }}' exists, so it is NOT attached to anything and nothing
+          is being filtered yet. If you expected a running box, check BOX_NAME.
+          Otherwise this is fine: `make create` will attach it.
+      when: not server_exists

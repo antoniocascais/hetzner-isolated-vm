@@ -2,7 +2,6 @@
 # Public SSH is reachable only from your whitelisted IP (Hetzner firewall).
 Port {{ box.ssh_port }}
 AddressFamily inet
-Protocol 2
 
 PermitRootLogin no
 PasswordAuthentication no
@@ -19,7 +18,12 @@ ClientAliveInterval 300
 ClientAliveCountMax 2
 
 X11Forwarding no
-AllowTcpForwarding no
+# `local` (not `no`): RUNBOOK.md documents `-L` tunnels as the way to reach a
+# service on the box (e.g. `make ssh EXTRA='-L 8080:localhost:8080'`). `no`
+# breaks that documented workflow outright. `local` still refuses `-R`/remote
+# forwarding, so it's strictly tighter than `yes` — don't "harden" this back
+# to `no` without updating the RUNBOOK to match.
+AllowTcpForwarding local
 GatewayPorts no
 PermitTunnel no
 LogLevel VERBOSE
@@ -28,3 +32,6 @@ LogLevel VERBOSE
 KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256
 Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
 MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+# Required for scp/sftp on modern OpenSSH clients; absent by default upstream.
+Subsystem sftp internal-sftp

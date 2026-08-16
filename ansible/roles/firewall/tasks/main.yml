@@ -9,14 +9,35 @@
       - hcloud_api_token | length > 0
     fail_msg: "Hetzner API token missing. Set HCLOUD_TOKEN in .env."
 
-- name: "Guard against accidental world-open SSH"
+- name: "Guard against world-open inbound rules"
+  # Every inbound rule must name only single-host sources (/32 or /128); only
+  # an explicit `direction: out` is exempt. port_covers_ssh just sharpens the
+  # failure message. Proof of the fail-closed choices:
+  # docs/decisions.md#firewall-single-host-guard.
   ansible.builtin.assert:
     that:
-      - not (item.source_ips | default([]) | select('in', ['0.0.0.0/0', '::/0']) | list | length > 0
-             and (item.port | default('') | string) == (box.ssh_port | string))
+      - not (is_inbound and (source_ips_list | length == 0))
+      - not (is_inbound and (non_single_host_ips | length > 0))
     fail_msg: >-
-      Refusing to open SSH (port {{ box.ssh_port }}) to 0.0.0.0/0.
-      Access must be your /32 only.
+      Refusing inbound rule{{ ' (port ' + (item.port | default('any/unset') | string) + ', which covers SSH port ' + (box.ssh_port | string) + ')' if port_covers_ssh else '' }}.
+      {{ 'source_ips is empty — an inbound rule must name at least one host.'
+         if (source_ips_list | length == 0)
+         else 'Every source_ips entry must be a single host (/32 IPv4 or /128 IPv6); not single-host: ' + (non_single_host_ips | join(', ')) + '.' }}
+      Access must be your /32 (or /128) only.
+  vars:
+    port_str: "{{ item.port | default('') | string | trim }}"
+    is_any: "{{ port_str == 'any' }}"
+    is_exact: "{{ port_str == (box.ssh_port | string) }}"
+    is_range: "{{ port_str is match('^[0-9]+-[0-9]+\\Z') }}"
+    range_lo: "{{ port_str.split('-')[0] if is_range else 0 }}"
+    range_hi: "{{ port_str.split('-')[1] if is_range else 0 }}"
+    in_range: "{{ is_range and (range_lo | int) <= (box.ssh_port | int) and (box.ssh_port | int) <= (range_hi | int) }}"
+    is_inbound: "{{ (item.direction | default('in')) != 'out' }}"
+    port_covers_ssh: "{{ is_inbound and (is_any or is_exact or in_range) }}"
+    source_ips_list: "{{ item.source_ips | default([]) }}"
+    ipv4_slash32: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/32\Z'
+    ipv6_slash128: '^(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}/128\Z'
+    non_single_host_ips: "{{ source_ips_list | reject('match', ipv4_slash32) | reject('match', ipv6_slash128) | list }}"
   loop: "{{ firewall_rules }}"
   loop_control:
     label: "{{ item.description | default(item.port | default('?')) }}"
@@ -35,15 +56,38 @@
     name: "{{ box.name }}"
   register: fw_server
 
-- name: "Fail if target server not found"
-  ansible.builtin.assert:
-    that:
-      - fw_server.hcloud_server_info | default([]) | length > 0
-    fail_msg: "Server '{{ box.name }}' not found — create it first (make create)."
-
-- name: "Attach firewall to server"
+# No hard fail when the server is missing: allow-ip must work before the box
+# exists (pre-seeding your IP). Only the ATTACH step is conditional; create.yml
+# attaches by name at creation, so this only fires on the allow-ip path.
+- name: "Attach firewall to server (skipped if the server doesn't exist yet)"
   hetzner.hcloud.firewall_resource:
     api_token: "{{ hcloud_api_token }}"
     firewall: "{{ firewall.name }}"
     servers: ["{{ box.name }}"]
     state: present
+  when: fw_server.hcloud_server_info | default([]) | length > 0
+
+- name: "Note: firewall rules are set, but not attached to any server yet"
+  ansible.builtin.debug:
+    msg: >-
+      Server '{{ box.name }}' not found — firewall '{{ firewall.name }}'
+      and its rules are up to date, but not attached to anything yet. Run
+      'make create' to bring up the server (it attaches this firewall
+      automatically), or re-run this after it exists.
+  # firewall_create_path (set only by create.yml) suppresses this "run make
+  # create" note mid-create. Default false = allow-ip guidance, the fail-safe.
+  when: >-
+    fw_server.hcloud_server_info | default([]) | length == 0
+    and not (firewall_create_path | default(false))
+
+- name: "Note: firewall rules are up to date; server attach happens next (create path)"
+  ansible.builtin.debug:
+    msg: >-
+      Server '{{ box.name }}' not found yet — expected at this point in
+      'make create': the firewall '{{ firewall.name }}' and its rules are up
+      to date but not attached to anything yet. The "Create server" task
+      immediately after this role attaches this firewall at creation, so
+      nothing here is run unattached.
+  when: >-
+    fw_server.hcloud_server_info | default([]) | length == 0
+    and (firewall_create_path | default(false))

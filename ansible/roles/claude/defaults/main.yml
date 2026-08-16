@@ -1,0 +1,7 @@
+---
+# Gates CLAUDE.md.j2's claude-fw/claude-notify sections. False because this
+# repo does not provision either tool (RUNBOOK "Known gaps / TODO") -- a box
+# built today has NO egress firewall and NO notify channel, and the template
+# must say so rather than describe P4b's future tooling as present. Flip to
+# true ONLY when the role that actually installs them lands.
+claude_fw_and_notify_enabled: false

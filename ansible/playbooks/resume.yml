@@ -1,0 +1,83 @@
+---
+# Power the server back on. Idempotent (the module checks status first).
+# Hetzner Volumes attach/detach only via explicit API calls — power cycles
+# don't touch them — so the volume is EXPECTED to stay attached. Documented
+# behavior, not proven in the module source, and not yet run against a real
+# box: hence still re-checked below rather than assumed.
+- name: Resume (power on) the server
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  tasks:
+    - name: "Require token"
+      ansible.builtin.assert:
+        that: hcloud_api_token | length > 0
+        fail_msg: "Set HCLOUD_TOKEN in .env"
+
+    - name: "Look up server"
+      hetzner.hcloud.server_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+      register: resume_server
+
+    - name: "Fail if server missing"
+      ansible.builtin.assert:
+        that: resume_server.hcloud_server_info | default([]) | length > 0
+        fail_msg: "Server '{{ box.name }}' not found — run 'make create' first."
+
+    - name: "Power on the server"
+      hetzner.hcloud.server:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ box.name }}"
+        state: started
+      register: resumed
+
+    - name: "Re-check the data volume is still attached"
+      hetzner.hcloud.volume_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ volume.name }}"
+      register: resume_volume
+
+    # Guard the [0] index inline: on an empty list it raises UndefinedError
+    # BEFORE `| default()` runs, so a tacked-on default can't catch a gone
+    # volume. Same pattern as create.yml's existing_owner.
+    - name: "Warn loudly if the volume did not survive the power cycle attached"
+      vars:
+        resume_owner: >-
+          {{
+            (resume_volume.hcloud_volume_info[0].server | default('', true))
+            if (resume_volume.hcloud_volume_info | default([]) | length > 0)
+            else ''
+          }}
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            ("WARNING: volume '" + volume.name + "' no longer exists — it was
+            not just reattached elsewhere, it's gone. ~/data is unrecoverable
+            from Hetzner's side unless you have an external backup. Run
+            'make create' to provision a NEW empty volume (this is not a
+            restore), then 'make configure' to mount it.")
+            if (resume_volume.hcloud_volume_info | default([]) | length == 0)
+            else
+            ("WARNING: volume '" + volume.name + "' is attached to '" +
+            (resume_owner if resume_owner else "nothing") + "', not '" +
+            box.name + "'. ~/data will be missing on the box. Hetzner
+            Volumes are expected to stay attached across power cycles, so
+            this means something unexpected happened — do not assume the
+            data is gone, but do not `mkfs` anything either. A bare
+            'make create' will refuse to reattach it (create.yml's
+            existing_owner guard) while it's attached elsewhere. Reattaching
+            requires VOLUME_ALLOW_REATTACH=true and stopping the other
+            server first (`make pause` pointed at it) — see RUNBOOK.md,
+            Pause / resume.")
+          }}
+      when: resume_owner != box.name
+
+    - name: "Next steps"
+      ansible.builtin.debug:
+        msg:
+          - "Server '{{ box.name }}' is at {{ resumed.hcloud_server.ipv4_address }}."
+          - "The Primary IP is a persistent resource bound to the server, not released by 'make pause', so it normally does NOT change across a pause/resume cycle — but if it looks wrong, or your own home IP changed while paused, run: make allow-ip"
+          - "Give the box a few seconds to finish booting before SSH/make ssh."

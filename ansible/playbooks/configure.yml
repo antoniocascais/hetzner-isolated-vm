@@ -1,6 +1,8 @@
 ---
-# Phase 2: resolve the server's public IP, configure it over SSH, then
-# re-assert the firewall rule from your CURRENT IP (handles IP drift).
+# Phase 2: re-assert the firewall rule from your CURRENT IP, THEN configure
+# the box over SSH. allow-ip runs FIRST so an IP drift self-heals before
+# "Wait for SSH" would hang its full 180s against a firewall allowing the old IP.
+- ansible.builtin.import_playbook: allow-ip.yml
 
 - name: Resolve server and build inventory
   hosts: localhost
@@ -25,6 +27,35 @@
         that: cfg_server.hcloud_server_info | default([]) | length > 0
         fail_msg: "Server '{{ box.name }}' not found — run 'make create' first."
 
+    - name: "Look up data volume"
+      hetzner.hcloud.volume_info:
+        api_token: "{{ hcloud_api_token }}"
+        name: "{{ volume.name }}"
+      register: cfg_volume
+
+    - name: "Fail if volume missing"
+      ansible.builtin.assert:
+        that: cfg_volume.hcloud_volume_info | default([]) | length > 0
+        fail_msg: "Volume '{{ volume.name }}' not found — run 'make create' first."
+
+    - name: "Fail if volume is not attached to this server"
+      ansible.builtin.assert:
+        that: cfg_volume.hcloud_volume_info[0].server == box.name
+        fail_msg: >-
+          Volume '{{ volume.name }}' is attached to
+          '{{ cfg_volume.hcloud_volume_info[0].server | default("nothing", true) }}',
+          not '{{ box.name }}' — run 'make create' to (re)attach it.
+
+    - name: "Wait for SSH on BOX_SSH_PORT"
+      # Hard fail: changing the port later is a rebuild (see RUNBOOK), so
+      # there is no legitimate second port to wait on.
+      ansible.builtin.wait_for:
+        host: "{{ cfg_server.hcloud_server_info[0].ipv4_address }}"
+        port: "{{ box.ssh_port }}"
+        state: started
+        delay: 5
+        timeout: 180
+
     - name: "Add server to inventory"
       ansible.builtin.add_host:
         name: claude_box
@@ -34,7 +65,11 @@
         ansible_port: "{{ box.ssh_port }}"
         ansible_ssh_private_key_file: "{{ lookup('env', 'BOX_SSH_KEY') | default('~/.ssh/hetzner-isolated-vm', true) }}"
         ansible_python_interpreter: /usr/bin/python3
-        ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+        # No ansible_ssh_common_args here — the TOFU policy lives once in
+        # ansible.cfg's ssh_args. Do NOT re-add a per-host override: a
+        # DIFFERENT value would be silently ignored, not applied.
+        # Proof: docs/decisions.md#ssh-host-key.
+        volume_device: "{{ cfg_volume.hcloud_volume_info[0].linux_device }}"
 
 - name: Configure the box over SSH
   hosts: claude_box
@@ -42,12 +77,18 @@
   gather_facts: true
   vars_files:
     - "{{ playbook_dir }}/../group_vars/all.yml"
-  roles:
-    - role: bootstrap
+  tasks:
+    - name: "Bootstrap the box (hardens sshd; moves it to BOX_SSH_PORT if needed)"
+      ansible.builtin.include_role:
+        name: bootstrap
       tags: [bootstrap]
-    - role: claude
-      tags: [claude]
 
-# Re-assert the firewall rule from your CURRENT IP (handles IP drift). Identical
-# to `make allow-ip`, so reuse that playbook instead of duplicating it.
-- ansible.builtin.import_playbook: allow-ip.yml
+    - name: "Mount the data volume"
+      ansible.builtin.include_role:
+        name: volume
+      tags: [volume]
+
+    - name: "Install Claude runtime"
+      ansible.builtin.include_role:
+        name: claude
+      tags: [claude]

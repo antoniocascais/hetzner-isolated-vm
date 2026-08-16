@@ -5,20 +5,21 @@ hcloud_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') | default('', true) }}"
 # Server shape — env overrides (.env) win, else these defaults.
 box:
   name: "{{ lookup('env', 'BOX_NAME') | default('hetzner-isolated-vm', true) }}"
-  server_type: "{{ lookup('env', 'BOX_TYPE') | default('cx22', true) }}"
-  image: "{{ lookup('env', 'BOX_IMAGE') | default('ubuntu-24.04', true) }}"
+  server_type: "{{ lookup('env', 'BOX_TYPE') | default('cx23', true) }}"
+  image: "{{ lookup('env', 'BOX_IMAGE') | default('ubuntu-26.04', true) }}"
   location: "{{ lookup('env', 'BOX_LOCATION') | default('nbg1', true) }}"
   user: "{{ lookup('env', 'BOX_USER') | default('claude', true) }}"
-  ssh_port: "{{ lookup('env', 'BOX_SSH_PORT') | default('22', true) }}"
+  ssh_port: "{{ lookup('env', 'BOX_SSH_PORT') | default('9427', true) }}"
   labels:
     managed_by: ansible
     purpose: hetzner-isolated-vm
 
-# Firewall: rule list is authoritative.
-#   []                  -> deny ALL inbound (lockdown state; outbound stays open)
-#   [{ssh from /32}]    -> bootstrap state (set by create play from your current IP)
+# One firewall PER box, named `box.name` verbatim: destroy.yml deletes the
+# firewall unconditionally, so a shared name would strip protection off
+# another box — and any suffix would orphan the live box's existing firewall
+# and silently build a second one beside it.
 firewall:
-  name: hetzner-isolated-vm
+  name: "{{ box.name }}"
   state: present
   labels:
     managed_by: ansible
@@ -26,12 +27,34 @@ firewall:
 
 firewall_rules: []
 
+# Persistent data volume. Survives `make destroy` (destroy.yml never touches
+# it) — that's the entire point, so its name is intentionally decoupled from
+# BOX_NAME: if BOX_NAME drifts (renamed box, blue/green swap, typo) the
+# volume must NOT silently orphan under the old name and bill forever. Set
+# VOLUME_NAME explicitly if you ever need to point at a different volume.
+volume:
+  name: "{{ lookup('env', 'VOLUME_NAME') | default('hetzner-isolated-vm-data', true) }}"
+  size: "{{ lookup('env', 'VOLUME_SIZE') | default('10', true) | int }}"
+  mount_path: "/home/{{ box.user }}/data"
+  labels:
+    managed_by: ansible
+    purpose: hetzner-isolated-vm-data
+  # DANGER: bypasses create.yml's refusal to attach a volume that's mounted
+  # on a DIFFERENT running box. Rationale + proof: docs/decisions.md#volume-reattach.
+  allow_reattach: "{{ (lookup('env', 'VOLUME_ALLOW_REATTACH') | default('false', true)) | lower in ['1', 'true', 'yes', 'on'] }}"
+  # DANGER: bypasses create.yml's refusal to provision a brand-new, empty
+  # volume while another volume already carries this tool's management labels
+  # (the drifted-VOLUME_NAME case: real data orphans and bills under the old name).
+  allow_new: "{{ (lookup('env', 'VOLUME_ALLOW_NEW') | default('false', true)) | lower in ['1', 'true', 'yes', 'on'] }}"
+
 # Claude runtime
 claude:
-  node_major: 22
-  workspace: "/home/{{ box.user }}/workspace"
+  # Must live under the volume, not the root disk — otherwise `make destroy`
+  # still wipes all real work. configure.yml's role order mounts the volume first.
+  workspace: "{{ volume.mount_path }}/workspace"
   extra_packages:
     - git
     - ripgrep
     - jq
     - build-essential
+    - tmux

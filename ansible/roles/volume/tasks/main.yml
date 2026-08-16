@@ -1,0 +1,45 @@
+---
+# Mounts the persistent Hetzner Volume (created/attached/formatted by
+# create.yml). Idempotent against an already-mounted volume.
+#
+# INVARIANT: "Mount" runs BEFORE the mkfs-capable filesystem task and must
+# never get ignore_errors — that ordering is the only thing preventing an
+# mkfs of an unformatted-but-attached volume.
+# Proof: docs/decisions.md#volume-format-and-order.
+#
+# volume_device comes from configure.yml's API lookup via add_host (device
+# letters aren't stable on Hetzner); read unqualified since this role only
+# runs in the claude_box play.
+
+- name: "Ensure data mount point exists"
+  ansible.builtin.file:
+    path: "{{ volume.mount_path }}"
+    state: directory
+    owner: "{{ box.user }}"
+    group: "{{ box.user }}"
+    mode: "0750"
+
+- name: "Mount the data volume (nofail, survives reboot even if detached)"
+  ansible.posix.mount:
+    path: "{{ volume.mount_path }}"
+    src: "{{ volume_device }}"
+    fstype: ext4
+    opts: nofail,defaults
+    state: mounted
+
+- name: "Grow the filesystem to match the block device (safe no-op if unchanged)"
+  # A VOLUME_SIZE bump grows the block device but not the ext4 inside it.
+  # resizefs only acts on a size mismatch, and shrinking is impossible
+  # (Hetzner volumes can't shrink either) — no data-loss direction to guard.
+  community.general.filesystem:
+    fstype: ext4
+    dev: "{{ volume_device }}"
+    resizefs: true
+
+- name: "Ensure mount point ownership (in case it pre-existed as root:root)"
+  ansible.builtin.file:
+    path: "{{ volume.mount_path }}"
+    state: directory
+    owner: "{{ box.user }}"
+    group: "{{ box.user }}"
+    mode: "0750"

@@ -16,3 +16,10 @@
         api_token: "{{ hcloud_api_token }}"
         name: "{{ firewall.name }}"
         state: absent
+
+    # DELIBERATELY no volume `state: absent`: the volume's whole point is to
+    # outlive `make destroy`, and delete_protection backstops even a future
+    # edit here. Deleting it is a manual, deliberate act — never this playbook.
+    - name: "Confirm the persistent volume is untouched"
+      ansible.builtin.debug:
+        msg: "Volume '{{ volume.name }}' is NOT deleted by this playbook (delete_protection: true). Data persists."

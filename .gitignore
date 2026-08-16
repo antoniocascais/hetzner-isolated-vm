@@ -1,8 +1,31 @@
 .env
 .env.*
+.envrc
 !.env.example
+
+# Nothing below is in the tree today; these rules exist so that a stray key,
+# token file, or verbose log can't be committed by accident. This repo is
+# public, and the credential it is built around (HCLOUD_TOKEN) is exactly what
+# direnv and ansible logs tend to capture.
+*.pem
+*.key
+secrets/
+*.log
+.venv/
 *.retry
 ansible/collections/ansible_collections/
 __pycache__/
 *.pyc
 .inventory.tmp
+
+# Claude Code writes approved command strings into settings.local.json, which for
+# this repo means the box's real IP and the operator's home /32. It was ignored
+# only by the original author's global gitignore — this repo is public, so the
+# rule has to live here or a fresh clone commits it on first run. (settings.json
+# is the deliberately-shared project file and stays tracked.)
+.claude/settings.local.json
+
+# Raw captures from the live box carry its real IP, the operator's home /32,
+# and secrets in adjacent files. This repo is public; snapshots are staged
+# outside it and only redacted artifacts are promoted into roles/.
+box-snapshot/
