@@ -9,14 +9,17 @@
       - hcloud_api_token | length > 0
     fail_msg: "Hetzner API token missing. Set HCLOUD_TOKEN in .env."
 
-- name: "Guard against accidental world-open rules covering BOX_SSH_PORT"
-  # A rule can cover the SSH port without matching it exactly: Hetzner's
-  # `port` field also accepts the literal "any" and "lo-hi" ranges.
-  # port_covers_ssh checks all three shapes.
+- name: "Guard against world-open inbound rules"
+  # The box's doctrine is "inbound from the operator's single host only,
+  # period" — for SSH or any other port. So EVERY inbound rule must name at
+  # least one source via source_ips, and every such entry must be exactly
+  # one host. `port_covers_ssh` (below) no longer gates whether the guard
+  # runs; it survives only to sharpen the failure message when a rule happens
+  # to cover BOX_SSH_PORT.
   #
-  # source_ips scope: every entry on an SSH-covering rule must name exactly
-  # one host — /32 for IPv4, /128 for IPv6. Rejecting only the literal
-  # strings "0.0.0.0/0" and "::/0" is not enough: "10.0.0.0/8", "0.0.0.0/1",
+  # source_ips scope: every entry on an inbound rule must name exactly one
+  # host — /32 for IPv4, /128 for IPv6. Rejecting only the literal strings
+  # "0.0.0.0/0" and "::/0" is not enough: "10.0.0.0/8", "0.0.0.0/1",
   # "192.0.0.0/2", or a bare "1.2.3.4" with no prefix are all wider than a
   # single host and would pass an exact-string check — hence the per-entry
   # format check below.
@@ -51,46 +54,31 @@
   # "any trailing junk". `is_range`'s port-range pattern also carries `\Z`,
   # but for that one the anchor alone is NOT enough and would make things
   # WORSE on its own: a non-match on ipv4_slash32/ipv6_slash128 fails
-  # *closed* ("not a single host" -> rejected), but a non-match on is_range
-  # fails *open* ("not a range" -> port_covers_ssh false -> guard skipped
-  # entirely). Proven: with port "9000-9500\n" and a world-open source, `$`
-  # made is_range True and in_range True via `| int`'s own whitespace
-  # stripping ("9500\n" | int == 9500) — guard fired, rule rejected. `\Z`
-  # alone made is_range False — in_range never evaluated, `| int` never ran,
-  # guard SKIPPED, world-open rule would sail through. So `port_str` is
-  # trimmed below before any of is_any/is_exact/is_range see it, making
-  # `\Z` safe everywhere: stray whitespace can now only ever WIDEN what
-  # counts as SSH-covering (a dirty value that used to slip past a check
-  # now gets checked), never narrow it.
+  # *closed* ("not a single host" -> rejected). `port_str` is trimmed below
+  # before is_any/is_exact/is_range see it, keeping `\Z` safe everywhere:
+  # stray whitespace can only ever WIDEN what counts as SSH-covering (used
+  # only for the error message now), never narrow what gets guarded.
   #
-  # Empty source_ips on an SSH-covering rule is treated as a hard failure,
-  # not a vacuous pass: formally "every entry is a single host" is true
-  # over zero entries, but an SSH rule with no named source is either a bug
+  # Empty source_ips on an inbound rule is treated as a hard failure, not a
+  # vacuous pass: formally "every entry is a single host" is true over zero
+  # entries, but an inbound rule with no named source is either a bug
   # upstream (e.g. IP detection returned nothing) or ambiguous about how
   # Hetzner's API would actually treat it — unverified either way, and this
   # guard fails closed on ambiguity rather than staying silent.
   #
-  # Direction matters: port_covers_ssh only skips for an EXPLICIT
-  # `direction: out` — anything else (missing, "in", or any unrecognised
-  # value) is treated as inbound and still gets checked. Deliberately not
-  # `item.direction | default('in') == 'in'`: that form only defaults
-  # *absent* direction to inbound but silently skips the guard for any
-  # value that isn't literally "in" (e.g. a typo, or a future Hetzner value
-  # this file doesn't know about yet) — proven: direction "OUT" and
-  # direction "inbound" both produced covers_ssh=False and a skipped guard
-  # under that form, the second case being exactly the unsafe branch (a
-  # near-miss value silently treated as not covering SSH). For a backstop
+  # Direction matters: only an EXPLICIT `direction: out` is exempt — anything
+  # else (missing, "in", or any unrecognised value) is treated as inbound and
+  # still gets checked. Deliberately not `item.direction | default('in') ==
+  # 'in'`: that form only defaults *absent* direction to inbound but silently
+  # skips the guard for any value that isn't literally "in" (e.g. a typo, or
+  # a future Hetzner value this file doesn't know about yet). For a backstop
   # whose whole job is catching what it doesn't expect, "anything I don't
   # recognise still gets checked" is the safer default; only a value this
-  # file positively knows means "not inbound" should turn the check off.
-  # An outbound rule (`direction: out`) uses `destination_ips`, not
-  # `source_ips`, so without this an outbound rule on the SSH port would
-  # read as "source_ips is empty" and hard-fail the empty-source_ips clause
-  # above even though it's not an inbound-exposure question at all — proven
-  # on real ansible-core 2.21.1. Fails closed either way (it forbids the
-  # rule rather than silently under-checking it), so the original gap this
-  # replaces was never a security hole, just a false positive that would
-  # have blocked a legitimate future egress rule.
+  # file positively knows means "not inbound" should turn the check off. An
+  # outbound rule (`direction: out`) uses `destination_ips`, not `source_ips`,
+  # so without this an outbound rule would read as "source_ips is empty" and
+  # hard-fail the empty-source_ips clause even though it's not an
+  # inbound-exposure question at all.
   #
   # IPv4 octets, no leading zeros: `1[0-9]{2}` / `[1-9]?[0-9]` (not
   # `[01]?[0-9]?[0-9]`) deliberately matches the sibling ipv4_strict_regex in
@@ -101,21 +89,13 @@
   # historical parsers treat them as octal), so rejecting them outright
   # rather than guessing is the same fail-closed posture as everything else
   # in this guard.
-  #
-  # A rule with no `port` key at all does not trip port_covers_ssh (port_str
-  # defaults to '', matching none of is_any/is_exact/in_range) — unchanged
-  # from before this edit. Hetzner requires `port` for tcp/udp rules, so in
-  # practice this only exempts non-port protocols (icmp, esp, gre), which
-  # cannot carry SSH traffic regardless of source_ips; unverified against
-  # Hetzner's actual API validation, since nothing here runs against it.
   ansible.builtin.assert:
     that:
-      - not (port_covers_ssh and (source_ips_list | length == 0))
-      - not (port_covers_ssh and (non_single_host_ips | length > 0))
+      - not (is_inbound and (source_ips_list | length == 0))
+      - not (is_inbound and (non_single_host_ips | length > 0))
     fail_msg: >-
-      Refusing rule for port {{ item.port | default('any/unset') }} — it
-      covers SSH (port {{ box.ssh_port }}).
-      {{ 'source_ips is empty — an SSH-covering rule must name at least one host.'
+      Refusing inbound rule{{ ' (port ' + (item.port | default('any/unset') | string) + ', which covers SSH port ' + (box.ssh_port | string) + ')' if port_covers_ssh else '' }}.
+      {{ 'source_ips is empty — an inbound rule must name at least one host.'
          if (source_ips_list | length == 0)
          else 'Every source_ips entry must be a single host (/32 IPv4 or /128 IPv6); not single-host: ' + (non_single_host_ips | join(', ')) + '.' }}
       Access must be your /32 (or /128) only.
