@@ -1,5 +1,6 @@
 ---
-# Phase 1: create the server + apply the firewall (SSH from your IP only).
+# Phase 1: apply the firewall, then create the server already attached to it,
+# so the box is never reachable except from your IP (no unfiltered window).
 # Runs entirely against the Hetzner API from localhost — no SSH to the box.
 - name: Create isolated VM
   hosts: localhost
@@ -31,6 +32,26 @@
       ansible.builtin.set_fact:
         whitelist_cidr: "{{ detected_public_ip }}/32"
 
+    - name: "Build firewall rule (your IP only)"
+      ansible.builtin.set_fact:
+        firewall_rules:
+          - direction: in
+            protocol: tcp
+            port: "{{ box.ssh_port | string }}"
+            source_ips: ["{{ whitelist_cidr }}"]
+            description: "SSH (whitelisted IP)"
+
+    # Firewall FIRST, server second: the role creates/updates the firewall
+    # object and its rules now (its attach step skips — no server exists yet),
+    # then "Create server" below passes `firewalls:` so Hetzner attaches it
+    # atomically at creation. There is no moment where the box sits on the open
+    # internet unfiltered. The role (not an inline hetzner.hcloud.firewall
+    # task) still runs the "every inbound rule is single-host" guard, so a
+    # malformed whitelist_cidr is rejected before any server exists.
+    - name: "Apply firewall (guard + create/update rules; attach to the server happens at creation)"
+      ansible.builtin.include_role:
+        name: firewall
+
     - name: "Create server"
       # no_log: user_data renders cloud-init, which embeds
       # console_password_hash (a SHA-512 crypt hash). Without this it can
@@ -45,40 +66,10 @@
         location: "{{ box.location }}"
         user_data: "{{ lookup('template', playbook_dir + '/../templates/cloud-init.yaml.j2') }}"
         labels: "{{ box.labels }}"
+        firewalls: ["{{ firewall.name }}"]
         state: present
       register: created
       no_log: true
-
-    - name: "Build firewall rule (your IP only)"
-      ansible.builtin.set_fact:
-        firewall_rules:
-          - direction: in
-            protocol: tcp
-            port: "{{ box.ssh_port | string }}"
-            source_ips: ["{{ whitelist_cidr }}"]
-            description: "SSH (whitelisted IP)"
-
-    # Routed through the `firewall` role rather than an inline
-    # hetzner.hcloud.firewall task so this path runs the same "Guard against
-    # accidental world-open SSH" assert that allow-ip.yml goes through — the
-    # guard exists only in roles/firewall/tasks/main.yml, so an inline apply
-    # here would let a malformed rule (e.g. a whitelist_cidr that isn't
-    # actually a /32) reach a real firewall unchecked on `make create`. The
-    # role also performs the attach; do not add a separate firewall_resource
-    # task here — it would attach twice. The role's attach step looks up the
-    # server by name; "Create server" above has already run in this play, so
-    # the lookup should find it — inferred from task order, not confirmed
-    # against Hetzner's API (nothing here has run against real
-    # infrastructure). If the lookup comes up empty,
-    # `firewall_require_attach: true` makes the role hard-fail instead of
-    # silently skipping the attach and letting this play end on its
-    # "Inbound SSH open from <cidr> only" banner with no firewall attached —
-    # full rationale at "Server must exist on this path" in roles/firewall/tasks/main.yml.
-    - name: "Apply firewall (guard, create/update rules, attach to the just-created server)"
-      ansible.builtin.include_role:
-        name: firewall
-      vars:
-        firewall_require_attach: true
 
     - name: "Look up existing volume (attachment-safety pre-check)"
       hetzner.hcloud.volume_info:

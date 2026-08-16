@@ -151,37 +151,14 @@
     name: "{{ box.name }}"
   register: fw_server
 
-# No hard fail when the server is missing BY DEFAULT: this role is reachable
-# via `make allow-ip` (allow-ip.yml), which is explicitly meant to work
-# before the box exists yet -- e.g. pre-seeding your IP right before
-# `make create`. The firewall OBJECT and its rules are created/updated above
-# unconditionally either way; only the ATTACH step (which needs a real
-# server ID) is conditional there.
-#
-# `create.yml`, however, calls this role right after creating the server in
-# the SAME play -- if the lookup below still can't find it (read-after-write
-# lag, a transient API blip, a BOX_NAME mismatch), silently skipping the
-# attach and falling through to the allow-ip-flavoured "run make create"
-# debug would be actively wrong there (nonsensical mid-`make create`) and,
-# far worse, would let the play reach create.yml's own closing banner
-# ("Inbound SSH open from <cidr> only; all else denied.") on a server that
-# is actually unprotected -- a running, billing, internet-reachable box
-# reported to the operator as green with no firewall attached at all and no
-# break-glass. `firewall_require_attach` (set by create.yml, left unset/false
-# by allow-ip.yml) makes that a loud failure on the path that needs it,
-# without taking away allow-ip's pre-seed-before-the-box-exists use case.
-- name: "Server must exist on this path (create.yml only, via firewall_require_attach)"
-  ansible.builtin.assert:
-    that:
-      - fw_server.hcloud_server_info | default([]) | length > 0
-    fail_msg: >-
-      Server '{{ box.name }}' not found after creation — refusing to leave
-      firewall '{{ firewall.name }}' unattached. Its rules are up to date,
-      but nothing is actually filtering traffic to any server right now.
-      This usually means read-after-write lag against Hetzner's API (re-run
-      to retry) or BOX_NAME drifted between the create step and this check.
-  when: firewall_require_attach | default(false)
-
+# No hard fail when the server is missing: this role is reached via
+# `make allow-ip` (allow-ip.yml), which is explicitly meant to work before
+# the box exists yet -- e.g. pre-seeding your IP right before `make create`.
+# The firewall OBJECT and its rules are created/updated above unconditionally
+# either way; only the ATTACH step (which needs a real server ID) is
+# conditional. Server creation passes the firewall by name (`firewalls:` in
+# create.yml), so the attach below only ever fires on the allow-ip path when
+# the server already exists.
 - name: "Attach firewall to server (skipped if the server doesn't exist yet)"
   hetzner.hcloud.firewall_resource:
     api_token: "{{ hcloud_api_token }}"
@@ -197,6 +174,4 @@
       and its rules are up to date, but not attached to anything yet. Run
       'make create' to bring up the server (it attaches this firewall
       automatically), or re-run this after it exists.
-  when: >-
-    fw_server.hcloud_server_info | default([]) | length == 0
-    and not (firewall_require_attach | default(false))
+  when: fw_server.hcloud_server_info | default([]) | length == 0
